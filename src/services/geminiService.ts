@@ -15,10 +15,62 @@ export function setStoredApiKey(key: string): void {
 }
 
 /**
+ * Direct Gemini API call fallback for Vercel or environments without active Express proxy
+ */
+async function callGeminiApiDirect(
+  apiKey: string,
+  prompt: string,
+  systemInstruction?: string,
+  responseJson: boolean = false
+): Promise<string> {
+  const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+  let lastError: any = null;
+
+  for (const model of candidateModels) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
+      const bodyPayload: any = {
+        contents: [{ parts: [{ text: prompt }] }],
+      };
+
+      if (systemInstruction) {
+        bodyPayload.systemInstruction = { parts: [{ text: systemInstruction }] };
+      }
+
+      if (responseJson) {
+        bodyPayload.generationConfig = { responseMimeType: 'application/json' };
+      }
+
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bodyPayload),
+      });
+
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) return text;
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        lastError = new Error(errJson?.error?.message || `HTTP ${res.status}`);
+      }
+    } catch (e: any) {
+      lastError = e;
+    }
+  }
+
+  throw lastError || new Error('Không thể tạo nội dung từ mô hình AI.');
+}
+
+/**
  * Test live latency against Gemini API
  */
 export async function testGeminiLatency(customKey?: string): Promise<LatencyTestResult> {
   const apiKey = customKey !== undefined ? customKey : getStoredApiKey();
+  const startTime = Date.now();
+
+  // 1. Try server proxy endpoint first
   try {
     const res = await fetch('/api/gemini/latency', {
       method: 'POST',
@@ -27,57 +79,91 @@ export async function testGeminiLatency(customKey?: string): Promise<LatencyTest
     });
 
     const contentType = res.headers.get('content-type') || '';
-    let data: any = {};
-    if (contentType.includes('application/json')) {
-      data = await res.json();
-    } else {
-      const textResponse = await res.text();
-      if (textResponse.trim().startsWith('<') || textResponse.includes('<!DOCTYPE')) {
-        return {
-          latencyMs: 0,
-          status: 'error',
-          modelName: 'gemini-3.7-flash',
-          message: 'Máy chủ đang khởi động hoặc phản hồi trang HTML (404/502). Vui lòng thử lại sau.',
-        };
-      }
-      try {
-        data = JSON.parse(textResponse);
-      } catch {
-        return {
-          latencyMs: 0,
-          status: 'error',
-          modelName: 'gemini-3.7-flash',
-          message: textResponse || 'Lỗi phản hồi từ máy chủ.',
-        };
-      }
-    }
-
-    if (!res.ok) {
+    if (res.ok && contentType.includes('application/json')) {
+      const data = await res.json().catch(() => ({}));
       return {
-        latencyMs: data.latencyMs || 0,
-        status: 'error',
-        modelName: data.modelName || 'gemini-3.7-flash',
-        message: data.message || 'Lỗi kiểm tra kết nối API Key.',
+        latencyMs: data?.latencyMs || (Date.now() - startTime),
+        status: data?.status === 'online' ? 'online' : 'error',
+        modelName: data?.modelName || 'gemini-2.5-flash',
+        message: data?.message || 'Kết nối thành công!',
       };
     }
-    return {
-      latencyMs: data.latencyMs,
-      status: 'online',
-      modelName: data.modelName || 'gemini-3.7-flash',
-      message: data.message || 'Kết nối thành công!',
-    };
+
+    if (!res.ok && contentType.includes('application/json')) {
+      const data = await res.json().catch(() => ({}));
+      // If error from backend proxy and user didn't enter custom key, return server error
+      if (data?.message && !apiKey) {
+        return {
+          latencyMs: data?.latencyMs || 0,
+          status: 'error',
+          modelName: data?.modelName || 'gemini-2.5-flash',
+          message: data?.message || 'Lỗi kiểm tra kết nối API Key.',
+        };
+      }
+    }
   } catch (err: any) {
-    return {
-      latencyMs: 0,
-      status: 'error',
-      modelName: 'gemini-3.7-flash',
-      message: 'Không thể kết nối tới máy chủ backend.',
-    };
+    console.warn('Backend proxy latency check unavailable, checking direct API...', err?.message);
   }
+
+  // 2. Client-side direct fallback for Vercel / static deployments with customKey
+  if (apiKey && apiKey.trim()) {
+    const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+    for (const model of candidateModels) {
+      const directStart = Date.now();
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey.trim())}`;
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: 'Ping' }] }],
+          }),
+        });
+
+        const latencyMs = Date.now() - directStart;
+        if (response.ok) {
+          return {
+            latencyMs,
+            status: 'online',
+            modelName: model,
+            message: 'Kết nối thành công!',
+          };
+        } else {
+          const errData = await response.json().catch(() => ({}));
+          let errMsg = errData?.error?.message || `Lỗi HTTP ${response.status}`;
+          if (errMsg.includes('API_KEY_INVALID') || errMsg.includes('API key not valid')) {
+            return {
+              latencyMs,
+              status: 'error',
+              modelName: model,
+              message: 'API Key không hợp lệ. Vui lòng kiểm tra lại mã khóa.',
+            };
+          }
+          if (errMsg.includes('429') || errMsg.includes('Quota') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+            return {
+              latencyMs,
+              status: 'error',
+              modelName: model,
+              message: 'Hạn mức API Key đã hết (Quota Exceeded). Vui lòng nạp thêm hạn mức hoặc thử lại sau.',
+            };
+          }
+        }
+      } catch (directErr: any) {
+        console.warn(`Direct latency check with ${model} failed:`, directErr?.message);
+      }
+    }
+  }
+
+  return {
+    latencyMs: 0,
+    status: 'error',
+    modelName: 'gemini-2.5-flash',
+    message: apiKey ? 'Không thể kết nối tới máy chủ Gemini. Vui lòng kiểm tra đường truyền mạng hoặc API Key.' : 'Chưa nhập API Key.',
+  };
 }
 
 /**
- * Core AI generation call via server API proxy
+ * Core AI generation call via server API proxy with client-side Vercel fallback
  */
 async function callGeminiApi(
   prompt: string,
@@ -109,22 +195,38 @@ async function callGeminiApi(
 
       const contentType = res.headers.get('content-type') || '';
       let data: any = {};
+      let isHtml = false;
+
       if (contentType.includes('application/json')) {
-        data = await res.json();
+        data = await res.json().catch(() => ({}));
       } else {
         const textResponse = await res.text();
         if (textResponse.trim().startsWith('<') || textResponse.includes('<!DOCTYPE')) {
-          throw new Error('Máy chủ đang khởi động hoặc phản hồi trang HTML (404/502). Vui lòng thử lại sau giây lát.');
-        }
-        try {
-          data = JSON.parse(textResponse);
-        } catch {
-          throw new Error(textResponse || 'Lỗi phản hồi từ máy chủ.');
+          isHtml = true;
+        } else {
+          try {
+            data = JSON.parse(textResponse);
+          } catch {
+            isHtml = true;
+          }
         }
       }
 
+      // If backend proxy returned 404 or HTML (e.g. running on Vercel as pure static SPA)
+      if ((!res.ok || isHtml) && customKey && !fileData?.base64) {
+        try {
+          return await callGeminiApiDirect(customKey, prompt, systemInstruction, responseJson);
+        } catch (directErr: any) {
+          console.warn('Direct Gemini call attempt failed:', directErr?.message);
+        }
+      }
+
+      if (isHtml) {
+        throw new Error('Máy chủ đang khởi động hoặc phản hồi trang HTML (404/502). Vui lòng thử lại sau giây lát.');
+      }
+
       if (!res.ok) {
-        let msg = data.error || data.message || 'Lỗi phản hồi từ Gemini API.';
+        let msg = data?.error || data?.message || 'Lỗi phản hồi từ Gemini API.';
         if (typeof msg === 'string' && (msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand'))) {
           msg = 'Hệ thống AI đang quá tải tạm thời. Thầy/Cô vui lòng bấm "Thử lại ngay" hoặc thử lại sau ít phút nhé!';
         }
@@ -134,8 +236,16 @@ async function callGeminiApi(
         }
         throw new Error(msg);
       }
-      return data.text || '';
+      return data?.text || '';
     } catch (err: any) {
+      if (customKey && !fileData?.base64) {
+        try {
+          return await callGeminiApiDirect(customKey, prompt, systemInstruction, responseJson);
+        } catch (directErr) {
+          // ignore and proceed to retries
+        }
+      }
+
       if (attempt < retries) {
         await new Promise(r => setTimeout(r, 2000));
         continue;
@@ -204,15 +314,15 @@ export async function generate5ELessonAI(
     const cleaned = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
     const parsed = JSON.parse(cleaned);
     return {
-      title: parsed.title || `Bài giảng 5E: ${topic}`,
-      duration: parsed.duration || '45 phút',
+      title: parsed?.title || `Bài giảng 5E: ${topic}`,
+      duration: parsed?.duration || '45 phút',
       subject,
       grade,
       topic,
-      stepEngage: parsed.stepEngage,
-      stepExplore: parsed.stepExplore,
-      stepElaborate: parsed.stepElaborate,
-      stepEvaluate: parsed.stepEvaluate,
+      stepEngage: parsed?.stepEngage,
+      stepExplore: parsed?.stepExplore,
+      stepElaborate: parsed?.stepElaborate,
+      stepEvaluate: parsed?.stepEvaluate,
     };
   } catch (error) {
     console.warn('Fallback 5E AI Generator used:', error);
@@ -414,20 +524,20 @@ YÊU CẦU:
 
       return {
         id: `q-ai-${Date.now()}-${idx}`,
-        code: item.code && !item.code.includes('TOÁ') && !item.code.includes('TOAN') ? item.code : `CH-${codePrefix}-${qNum}`,
+        code: item?.code && !item?.code.includes('TOÁ') && !item?.code.includes('TOAN') ? item?.code : `CH-${codePrefix}-${qNum}`,
         subject: normSubject,
         grade: grade || 'Khối 4',
-        level: item.level || (idx % 2 === 0 ? 'nhan_biet' : 'thong_hieu'),
-        type: item.type || 'multiple_choice',
-        content: item.content || `Câu hỏi ${idx + 1}`,
-        lessonName: item.lessonName || (typeof topicContent === 'string' && topicContent.length < 100 ? topicContent : 'Chủ đề bài học'),
-        options: Array.isArray(item.options) && item.options.length > 0 ? item.options : undefined,
-        statements: item.statements || undefined,
-        classificationGroups: item.classificationGroups || undefined,
-        classificationItems: item.classificationItems || undefined,
-        matchingPairs: item.matchingPairs || undefined,
-        correctAnswer: item.correctAnswer || (item.type === 'multiple_choice' ? 'A' : ''),
-        explanation: item.explanation || 'Hướng dẫn giải chi tiết theo chuẩn sư phạm.',
+        level: item?.level || (idx % 2 === 0 ? 'nhan_biet' : 'thong_hieu'),
+        type: item?.type || 'multiple_choice',
+        content: item?.content || `Câu hỏi ${idx + 1}`,
+        lessonName: item?.lessonName || (typeof topicContent === 'string' && topicContent.length < 100 ? topicContent : 'Chủ đề bài học'),
+        options: Array.isArray(item?.options) && item?.options.length > 0 ? item?.options : undefined,
+        statements: item?.statements || undefined,
+        classificationGroups: item?.classificationGroups || undefined,
+        classificationItems: item?.classificationItems || undefined,
+        matchingPairs: item?.matchingPairs || undefined,
+        correctAnswer: item?.correctAnswer || (item?.type === 'multiple_choice' ? 'A' : ''),
+        explanation: item?.explanation || 'Hướng dẫn giải chi tiết theo chuẩn sư phạm.',
       };
     });
   } catch (error: any) {
@@ -456,8 +566,8 @@ export async function gradeSubmissionAI(
     const cleaned = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
     const parsed = JSON.parse(cleaned);
     return {
-      score: typeof parsed.score === 'number' ? parsed.score : 8.5,
-      feedback: parsed.feedback || 'Bài làm đạt yêu cầu, tư duy logic tốt!',
+      score: typeof parsed?.score === 'number' ? parsed.score : 8.5,
+      feedback: parsed?.feedback || 'Bài làm đạt yêu cầu, tư duy logic tốt!',
     };
   } catch (error) {
     return {

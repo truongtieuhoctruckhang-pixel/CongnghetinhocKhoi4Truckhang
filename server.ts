@@ -64,7 +64,7 @@ async function startServer() {
     const startTime = Date.now();
     try {
       const ai = await getGeminiClient(customKey);
-      const candidateModels = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+      const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash'];
       let lastError: any = null;
       for (const modelName of candidateModels) {
         try {
@@ -77,7 +77,7 @@ async function startServer() {
             latencyMs: durationMs,
             status: 'online',
             modelName,
-            message: response.text ? 'Kết nối thành công!' : 'Không có phản hồi.',
+            message: response?.text ? 'Kết nối thành công!' : 'Không có phản hồi.',
           });
         } catch (err: any) {
           lastError = err;
@@ -87,14 +87,14 @@ async function startServer() {
       throw lastError || new Error('Không thể kết nối với các model Gemini.');
     } catch (error: any) {
       const durationMs = Date.now() - startTime;
-      let errMsg = error.message || 'Lỗi kết nối Gemini API';
+      let errMsg = error?.message || 'Lỗi kết nối Gemini API';
       if (errMsg.includes('429') || errMsg.includes('Quota') || errMsg.includes('RESOURCE_EXHAUSTED')) {
         errMsg = 'Hạn mức API Gemini đã hết (Quota Exceeded). Vui lòng nạp thêm hạn mức hoặc dùng API Key cá nhân khác.';
       }
       res.status(500).json({
         latencyMs: durationMs,
         status: 'error',
-        modelName: 'gemini-3.7-flash',
+        modelName: 'gemini-2.5-flash',
         message: errMsg,
       });
     }
@@ -147,7 +147,7 @@ async function startServer() {
         }
       }
 
-      const candidateModels = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite'];
+      const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash'];
       let response: any = null;
       let lastError: any = null;
 
@@ -158,20 +158,20 @@ async function startServer() {
             contents,
             config,
           });
-          if (response && response.text) {
+          if (response?.text) {
             break;
           }
         } catch (modelErr: any) {
           lastError = modelErr;
-          console.warn(`Model ${modelName} encountered error, trying next available model...`, modelErr.message);
+          console.warn(`Model ${modelName} encountered error, trying next available model...`, modelErr?.message);
         }
       }
 
-      if (!response || !response.text) {
+      if (!response?.text) {
         throw lastError || new Error('Không nhận được phản hồi từ mô hình AI.');
       }
 
-      res.json({ text: response.text });
+      res.json({ text: response?.text || '' });
     } catch (error: any) {
       console.error('Gemini Generate Error:', error);
       let rawMsg = error.message || '';

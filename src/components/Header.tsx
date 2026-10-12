@@ -448,15 +448,15 @@ export const Header: React.FC<HeaderProps> = ({
                     )}
                     <div>
                       <div className="font-semibold flex items-center gap-2">
-                        <span>{latencyResult.message}</span>
-                        {latencyResult.status === 'online' && (
+                        <span>{latencyResult?.message}</span>
+                        {latencyResult?.status === 'online' && (
                           <span className="bg-[#DCFCE7] text-[#16A34A] px-2 py-0.5 rounded-full text-xs font-mono font-medium">
-                            ⚡ {latencyResult.latencyMs} ms
+                            ⚡ {latencyResult?.latencyMs} ms
                           </span>
                         )}
                       </div>
                       <div className="text-xs opacity-80 mt-0.5 text-gray-600">
-                        Mô hình: <code className="font-mono font-medium text-gray-800">{latencyResult.modelName}</code>
+                        Mô hình: <code className="font-mono font-medium text-gray-800">{latencyResult?.modelName || 'gemini-2.5-flash'}</code>
                       </div>
                     </div>
                   </div>
