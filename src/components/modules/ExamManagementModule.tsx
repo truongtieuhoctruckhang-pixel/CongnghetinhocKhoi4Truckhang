@@ -169,6 +169,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [deletingExam, setDeletingExam] = useState<ExamPaper | null>(null);
   const [isManualExamModalOpen, setIsManualExamModalOpen] = useState(false);
   const [isBankExamModalOpen, setIsBankExamModalOpen] = useState(false);
+  const effectiveQuestionsBank = questionsBank && questionsBank.length > 0 ? questionsBank : getLocalCachedQuestions();
 
   const handleCreateExamFromBank = (examData: {
     title: string;
@@ -213,7 +214,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
           id: examId,
           originalExamId: rootId,
           title: examData.title || `Đề kiểm tra ${examData.subject} (${new Date().toLocaleDateString('vi-VN')})`,
-          subject: examData.subject || 'Toán',
+          subject: examData.subject || 'Tin học',
           grade: examData.grade || 'Khối 4',
           durationMinutes: Number(examData.durationMinutes) || 45,
           examType: examData.examType || 'Thường xuyên',
@@ -273,7 +274,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     const newExam: ExamPaper = {
       id: `ex-${Date.now()}`,
       title: meta?.lessonName ? `Đề kiểm tra: ${meta.lessonName}` : `Đề kiểm tra thủ công (${new Date().toLocaleDateString('vi-VN')})`,
-      subject: meta?.subject || questions[0]?.subject || 'Toán',
+      subject: meta?.subject || questions[0]?.subject || 'Tin học',
       grade: meta?.grade || questions[0]?.grade || 'Khối 4',
       durationMinutes: Number(meta?.durationMinutes) || 45,
       examType: meta?.examType || 'Thường xuyên',
@@ -634,7 +635,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       setEditExamType(editingExam.examType || (editingExam as any).testType || (editingExam as any).type || 'Thường xuyên');
       setEditDurationMinutes(editingExam.durationMinutes || (editingExam as any).duration || 45);
       setEditTargetClass(editingExam.targetClass || 'Tất cả các lớp');
-      setEditSubject(editingExam.subject || 'Toán');
+      setEditSubject(editingExam.subject || 'Tin học');
       setEditGrade(editingExam.grade || 'Khối 4');
       setEditStatus(editingExam.status === 'published' ? 'published' : 'draft');
 
@@ -824,8 +825,8 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
 
   // AI Creator State
   const [aiTopicDoc, setAiTopicDoc] = useState('');
-  const [aiSubject, setAiSubject] = useState('Toán Học');
-  const [aiGrade, setAiGrade] = useState('Khối 10');
+  const [aiSubject, setAiSubject] = useState('Tin học');
+  const [aiGrade, setAiGrade] = useState('Khối 4');
   const [aiCount, setAiCount] = useState(5);
   const [isGeneratingAi, setIsGeneratingAi] = useState(false);
 
@@ -1815,17 +1816,17 @@ return (
         onSaveQuestions={handleSaveManualExam}
         initialLessonName="Đề kiểm tra thủ công"
         initialGrade="Khối 4"
-        initialSubject="Toán"
+        initialSubject="Tin học"
         defaultSaveToGlobal={false}
       />
 
       <UseQuestionBankModal
         isOpen={isBankExamModalOpen}
         onClose={() => setIsBankExamModalOpen(false)}
-        questions={questionsBank}
+        questions={effectiveQuestionsBank}
         targetContext="exam"
-        initialSubject={filterSubject !== 'Tất cả các môn' ? filterSubject : 'Toán'}
-        initialGrade={filterGrade !== 'Tất cả các khối' ? filterGrade : 'Khối 4'}
+        initialSubject={filterSubject !== 'Tất cả các môn' && SUBJECTS.includes(filterSubject) ? filterSubject : 'Tin học'}
+        initialGrade={filterGrade !== 'Tất cả các khối' && GRADES.includes(filterGrade) ? filterGrade : 'Khối 4'}
         initialTargetClass={filterClass !== 'Tất cả các lớp' ? filterClass : undefined}
         onCreateExam={handleCreateExamFromBank}
       />
@@ -2147,12 +2148,9 @@ return (
                   onChange={(e) => setAiSubject(e.target.value)}
                   className="w-full p-2.5 text-xs rounded-xl border border-slate-300 bg-white"
                 >
-                  <option value="Toán Học">Toán Học</option>
-                  <option value="Vật Lý">Vật Lý</option>
-                  <option value="Hóa Học">Hóa Học</option>
-                  <option value="Sinh Học">Sinh Học</option>
-                  <option value="Ngữ Văn">Ngữ Văn</option>
-                  <option value="Tiếng Anh">Tiếng Anh</option>
+                  {SUBJECTS.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
                 </select>
               </div>
 
@@ -2163,9 +2161,9 @@ return (
                   onChange={(e) => setAiGrade(e.target.value)}
                   className="w-full p-2.5 text-xs rounded-xl border border-slate-300 bg-white"
                 >
-                  <option value="Khối 10">Khối 10</option>
-                  <option value="Khối 11">Khối 11</option>
-                  <option value="Khối 12">Khối 12</option>
+                  {GRADES.map((g) => (
+                    <option key={g} value={g}>{g}</option>
+                  ))}
                 </select>
               </div>
 

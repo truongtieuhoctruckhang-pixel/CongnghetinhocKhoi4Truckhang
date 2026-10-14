@@ -7,17 +7,17 @@ import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import mammoth from 'mammoth';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyD2f35Mnf18fKe6SSfKx5YvSiV_UtMzrd0",
-  authDomain: "weblmsquanlydayvagoc.firebaseapp.com",
-  projectId: "weblmsquanlydayvagoc",
-  storageBucket: "weblmsquanlydayvagoc.firebasestorage.app",
-  messagingSenderId: "964862755342",
-  appId: "1:964862755342:web:fd94c82dd50bd5aae8725f",
-  measurementId: ""
+  apiKey: "AIzaSyCS1yi8iOWa3Pzg_WMRIhgrpqh0IJ34U20",
+  authDomain: "congnghetinhock4truckhang.firebaseapp.com",
+  projectId: "congnghetinhock4truckhang",
+  storageBucket: "congnghetinhock4truckhang.firebasestorage.app",
+  messagingSenderId: "432731339396",
+  appId: "1:432731339396:web:714941850dc4715249a0d1",
+  measurementId: "G-0W26BBFGFJ"
 };
 
 const appFb = initializeApp(firebaseConfig);
-const db = getFirestore(appFb, "ai-studio-eduplayprohthngq-71ccd90c-504d-46b7-a2bb-043f46702509");
+const db = getFirestore(appFb);
 
 async function startServer() {
   const app = express();
@@ -64,7 +64,7 @@ async function startServer() {
     const startTime = Date.now();
     try {
       const ai = await getGeminiClient(customKey);
-      const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+      const candidateModels = ['gemini-3.7-flash', 'gemini-flash-latest', 'gemini-2.0-flash', 'gemini-1.5-flash'];
       let lastError: any = null;
       for (const modelName of candidateModels) {
         try {
@@ -94,7 +94,7 @@ async function startServer() {
       res.status(500).json({
         latencyMs: durationMs,
         status: 'error',
-        modelName: 'gemini-2.5-flash',
+        modelName: 'gemini-3.7-flash',
         message: errMsg,
       });
     }
@@ -147,7 +147,7 @@ async function startServer() {
         }
       }
 
-      const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+      const candidateModels = ['gemini-3.7-flash', 'gemini-flash-latest', 'gemini-2.0-flash', 'gemini-1.5-flash'];
       let response: any = null;
       let lastError: any = null;
 

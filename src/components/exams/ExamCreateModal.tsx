@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, Check, Sparkles, Plus } from 'lucide-react';
 import { Subject, GradeLevel } from '../../types';
 import { useApp } from '../../context/AppContext';
+import { isSubjectMatching, isGradeMatching } from '../../services/questionStorageService';
 
 interface ExamCreateModalProps {
   onClose: () => void;
@@ -18,7 +19,7 @@ export const ExamCreateModal: React.FC<ExamCreateModalProps> = ({ onClose }) => 
   const [title, setTitle] = useState('');
   const [code, setCode] = useState(`THQH-${Date.now().toString().slice(-4)}`);
   const [subject, setSubject] = useState<Subject>('Tin học');
-  const [grade, setGrade] = useState<GradeLevel>(5);
+  const [grade, setGrade] = useState<GradeLevel>(4);
   const [durationMinutes, setDurationMinutes] = useState(40);
   const [academicTerm, setAcademicTerm] = useState<'Học kỳ I' | 'Học kỳ II' | 'Giữa kỳ I' | 'Giữa kỳ II'>('Giữa kỳ II');
   const [schoolYear, setSchoolYear] = useState('2025 - 2026');
@@ -27,7 +28,7 @@ export const ExamCreateModal: React.FC<ExamCreateModalProps> = ({ onClose }) => 
 
   // Filter available questions by subject & grade
   const availableQuestions = questions.filter(
-    q => q.subject === subject && q.grade === grade
+    q => isSubjectMatching(q.subject, subject) && isGradeMatching(q.grade, grade)
   );
 
   const handleToggleQuestion = (id: string) => {

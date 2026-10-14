@@ -456,7 +456,7 @@ export const Header: React.FC<HeaderProps> = ({
                         )}
                       </div>
                       <div className="text-xs opacity-80 mt-0.5 text-gray-600">
-                        Mô hình: <code className="font-mono font-medium text-gray-800">{latencyResult?.modelName || 'gemini-2.5-flash'}</code>
+                        Mô hình: <code className="font-mono font-medium text-gray-800">{latencyResult?.modelName || 'gemini-3.7-flash'}</code>
                       </div>
                     </div>
                   </div>

@@ -421,6 +421,15 @@ export function createShuffledOrderingSteps(canonicalSteps: string[]): string[] 
 }
 
 /**
+ * Extracts normalized lesson / topic name from any question object
+ */
+export function getQuestionLessonName(q: any): string {
+  if (!q) return '';
+  const name = q.lessonName || q.topic || q.chuDe || q.baiHoc || q.lessonTitle || q.lesson || '';
+  return String(name).trim();
+}
+
+/**
  * Clean & sanitize question data before saving to Firestore to prevent undefined or missing fields
  */
 export function sanitizeQuestionForFirestore(q: any): QuestionItem & Record<string, any> {
@@ -463,6 +472,7 @@ export function sanitizeQuestionForFirestore(q: any): QuestionItem & Record<stri
   let rawLevel = String(q.level || q.mucDo || 'nhan_biet').trim();
 
   const qType = normalizeQuestionType(q.type);
+  const rawLesson = q.lessonName || q.topic || q.chuDe || q.baiHoc || q.lessonTitle || 'Bài học';
 
   const cleanQ: QuestionItem & Record<string, any> = {
     id: String(safeId),
@@ -477,7 +487,11 @@ export function sanitizeQuestionForFirestore(q: any): QuestionItem & Record<stri
     content: rawContent,
     title: rawContent,
     question: rawContent,
-    lessonName: q.lessonName || q.baiHoc || 'Bài học',
+    lessonName: rawLesson,
+    topic: rawLesson,
+    chuDe: rawLesson,
+    baiHoc: rawLesson,
+    lessonId: q.lessonId || (q as any).topicId || '',
     correctAnswer: rawCorrectAnswer,
     answer: rawCorrectAnswer,
     explanation: q.explanation || q.giaiThich || 'Hướng dẫn sư phạm cho câu hỏi.',

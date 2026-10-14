@@ -25,7 +25,14 @@ import {
 import { QuestionItem, CognitiveLevel } from '../../types';
 import { SUBJECTS, GRADES, CLASSES_BY_GRADE, QUESTION_TYPES, EXAM_TYPES, getQuestionTypeLabel, matchesQuestionType } from '../../lib/constants';
 import { useClassesList } from '../../services/classStorageService';
-import { getLocalCachedQuestions, isGradeMatching, isSubjectMatching } from '../../services/questionStorageService';
+import {
+  getLocalCachedQuestions,
+  isGradeMatching,
+  isSubjectMatching,
+  getQuestionLessonName,
+  subscribeToQuestionsFromFirestore,
+  fetchQuestionsFromFirestore
+} from '../../services/questionStorageService';
 
 export type TargetContext = 'exam' | 'assignment' | 'elaborate' | 'apply' | 'assessment' | 'game' | 'default';
 
@@ -127,8 +134,12 @@ export const UseQuestionBankModal: React.FC<UseQuestionBankModalProps> = ({
 
   const [title, setTitle] = useState(initialTitle || defaultInitialTitle);
   const [isTitleTouched, setIsTitleTouched] = useState(false);
-  const [subject, setSubject] = useState(initialSubject || 'Công nghệ');
-  const [grade, setGrade] = useState(initialGrade || 'Khối 4');
+  const [subject, setSubject] = useState(
+    initialSubject && SUBJECTS.includes(initialSubject) ? initialSubject : (SUBJECTS[0] || 'Tin học')
+  );
+  const [grade, setGrade] = useState(
+    initialGrade && GRADES.includes(initialGrade) ? initialGrade : (GRADES[0] || 'Khối 4')
+  );
   const [selectedClasses, setSelectedClasses] = useState<string[]>([]);
   const [classError, setClassError] = useState<string | null>(null);
   const [levelFilter, setLevelFilter] = useState('all');
@@ -138,6 +149,47 @@ export const UseQuestionBankModal: React.FC<UseQuestionBankModalProps> = ({
   const [durationMinutes, setDurationMinutes] = useState<number>(45);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const isSubmittingRef = React.useRef<boolean>(false);
+
+  // Firestore Live Bank Questions & Loading State
+  const [firestoreQuestions, setFirestoreQuestions] = useState<QuestionItem[]>(() => getLocalCachedQuestions());
+  const [isLoadingQuestions, setIsLoadingQuestions] = useState<boolean>(false);
+
+  React.useEffect(() => {
+    if (!isOpen) return;
+
+    let isMounted = true;
+    setIsLoadingQuestions(true);
+
+    const unsub = subscribeToQuestionsFromFirestore(
+      (loaded) => {
+        if (!isMounted) return;
+        if (loaded && loaded.length > 0) {
+          setFirestoreQuestions(loaded);
+        }
+        setIsLoadingQuestions(false);
+      },
+      (err) => {
+        if (!isMounted) return;
+        console.warn('UseQuestionBankModal firestore listener error:', err);
+        setIsLoadingQuestions(false);
+      }
+    );
+
+    fetchQuestionsFromFirestore().then((fetched) => {
+      if (!isMounted) return;
+      if (fetched && fetched.length > 0) {
+        setFirestoreQuestions(fetched);
+      }
+      setIsLoadingQuestions(false);
+    }).catch(() => {
+      if (isMounted) setIsLoadingQuestions(false);
+    });
+
+    return () => {
+      isMounted = false;
+      unsub();
+    };
+  }, [isOpen]);
 
   // Tab 2 States: Filter & Selection
   const [selectedLesson, setSelectedLesson] = useState('all');
@@ -153,12 +205,22 @@ export const UseQuestionBankModal: React.FC<UseQuestionBankModalProps> = ({
     }
   };
 
+  const handleSubjectChange = (newSubject: string) => {
+    setSubject(newSubject);
+    setSelectedLesson('all');
+  };
+
+  const handleGradeChange = (newGrade: string) => {
+    setGrade(newGrade);
+    setSelectedLesson('all');
+  };
+
   // Synchronize when modal opens or initial props update
   React.useEffect(() => {
     if (isOpen) {
       setExamType(EXAM_TYPES[0] || 'Thường xuyên');
       setDurationMinutes(45);
-      setSelectedClasses([]);
+      setSelectedClasses(initialTargetClass ? [initialTargetClass] : []);
       setClassError(null);
       setActiveTab(1);
       setSelectedQuestionIds([]);
@@ -176,14 +238,23 @@ export const UseQuestionBankModal: React.FC<UseQuestionBankModalProps> = ({
             : 'Bài tập tự luyện từ Ngân hàng câu hỏi'
         );
       }
-      if (initialSubject) setSubject(initialSubject);
-      if (initialGrade) setGrade(initialGrade);
+      // Ensure subject is strictly a valid subject in SUBJECTS
+      if (initialSubject && SUBJECTS.includes(initialSubject)) {
+        setSubject(initialSubject);
+      } else if (!SUBJECTS.includes(subject)) {
+        setSubject(SUBJECTS[0] || 'Tin học');
+      }
+      if (initialGrade && GRADES.includes(initialGrade)) {
+        setGrade(initialGrade);
+      } else if (!GRADES.includes(grade)) {
+        setGrade(GRADES[0] || 'Khối 4');
+      }
     } else {
       setSelectedClasses([]);
       setClassError(null);
       setSelectedQuestionIds([]);
     }
-  }, [isOpen, initialTitle, initialSubject, initialGrade, isExamMode, isGameMode, defaultInitialTitle]);
+  }, [isOpen, initialTitle, initialSubject, initialGrade, initialTargetClass, isExamMode, isGameMode, defaultInitialTitle]);
 
   // Tab 3 State: Sub-filter by index
   const [tab3FilterIndex, setTab3FilterIndex] = useState<number | 'all'>('all');
@@ -191,11 +262,12 @@ export const UseQuestionBankModal: React.FC<UseQuestionBankModalProps> = ({
   // Feedback Notification Toast
   const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
 
-  // Effective questions source
+  // Effective questions source (prioritizes latest loaded firestore questions, then passed prop, then cache)
   const allBankQuestions = useMemo(() => {
+    if (firestoreQuestions && firestoreQuestions.length > 0) return firestoreQuestions;
     if (questions && questions.length > 0) return questions;
     return getLocalCachedQuestions();
-  }, [questions]);
+  }, [firestoreQuestions, questions]);
 
   // Available classes for selected grade
   const availableClasses = getClassesForGrade(grade).map(c => c.name);
@@ -212,27 +284,29 @@ export const UseQuestionBankModal: React.FC<UseQuestionBankModalProps> = ({
     setSelectedClasses((prev) => prev.filter((c) => c !== cls));
   };
 
-  // Get available lessons based on subject and grade
-  const availableLessons = useMemo(() => {
-    const list = Array.from(
-      new Set(
-        allBankQuestions
-          .filter((q) => isSubjectMatching(q.subject || (q as any).monHoc, subject) && isGradeMatching(q.grade || (q as any).khoiLop, grade))
-          .map((q) => q.lessonName)
-          .filter(Boolean)
-      )
-    ) as string[];
+  // Helper to normalize lesson string for loose comparison
+  const normalizeLessonKey = (str: string) => {
+    return String(str || '')
+      .replace(/^(bài\s*\d+|chủ\s*đề[\s\d]*)\s*[:\.\-]\s*/i, '')
+      .trim()
+      .toLowerCase();
+  };
 
-    if (list.length === 0) {
-      if (subject === 'Công nghệ') {
-        return ['Bài 1: Tự nhiên và công nghệ', 'Bài 2: Sử dụng đèn học', 'Bài 3: Sử dụng quạt điện'];
+  // Get available lessons based on subject and grade dynamically from real questions in Firestore
+  const availableLessons = useMemo(() => {
+    const matchingQuestions = allBankQuestions.filter(
+      (q) => isSubjectMatching(q.subject || (q as any).monHoc, subject) && isGradeMatching(q.grade || (q as any).khoiLop, grade)
+    );
+
+    const lessonsSet = new Set<string>();
+    matchingQuestions.forEach((q) => {
+      const lesson = getQuestionLessonName(q);
+      if (lesson && lesson !== 'Bài học' && lesson !== 'undefined') {
+        lessonsSet.add(lesson);
       }
-      if (subject === 'Tin học') {
-        return ['Thông tin và quyết định', 'Làm quen với máy tính', 'Bàn phím và chuột'];
-      }
-      return ['Bài 1: Tổng quan bài học', 'Bài 2: Kiến thức trọng tâm'];
-    }
-    return list;
+    });
+
+    return Array.from(lessonsSet).sort();
   }, [allBankQuestions, subject, grade]);
 
   // Filter questions for Tab 2
@@ -243,11 +317,15 @@ export const UseQuestionBankModal: React.FC<UseQuestionBankModalProps> = ({
       // Grade match
       const matchGrade = isGradeMatching(q.grade || (q as any).khoiLop, grade);
       // Lesson match
+      const qLesson = getQuestionLessonName(q);
       const matchLesson =
         selectedLesson === 'all' ||
         !selectedLesson ||
-        q.lessonName === selectedLesson ||
-        (selectedLesson === 'Bài 1: Tự nhiên và công nghệ' && (!q.lessonName || q.lessonName.includes('Tự nhiên')));
+        qLesson === selectedLesson ||
+        qLesson.toLowerCase() === selectedLesson.toLowerCase() ||
+        ((q as any).lessonId && ((q as any).lessonId === selectedLesson || (q as any).topicId === selectedLesson)) ||
+        (normalizeLessonKey(qLesson) && normalizeLessonKey(qLesson) === normalizeLessonKey(selectedLesson));
+
       // Type match
       const matchType = matchesQuestionType(q.type, tab2TypeFilter);
 
@@ -756,7 +834,7 @@ export const UseQuestionBankModal: React.FC<UseQuestionBankModalProps> = ({
                     </label>
                     <select
                       value={subject}
-                      onChange={(e) => setSubject(e.target.value)}
+                      onChange={(e) => handleSubjectChange(e.target.value)}
                       className="w-full px-3.5 py-2.5 text-xs font-medium rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white cursor-pointer"
                     >
                       {SUBJECTS.map((s) => (
@@ -775,7 +853,7 @@ export const UseQuestionBankModal: React.FC<UseQuestionBankModalProps> = ({
                     </label>
                     <select
                       value={grade}
-                      onChange={(e) => setGrade(e.target.value)}
+                      onChange={(e) => handleGradeChange(e.target.value)}
                       className="w-full px-3.5 py-2.5 text-xs font-medium rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-teal-500 bg-white cursor-pointer"
                     >
                       {GRADES.map((g) => (
@@ -1100,10 +1178,25 @@ export const UseQuestionBankModal: React.FC<UseQuestionBankModalProps> = ({
 
               {/* Questions List */}
               <div className="space-y-4 max-h-[50vh] overflow-y-auto pr-1">
-                {filteredQuestions.length === 0 ? (
-                  <div className="text-center py-10 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
-                    <p className="text-xs font-medium text-slate-500">
-                      Không tìm thấy câu hỏi phù hợp với bộ lọc hiện tại.
+                {isLoadingQuestions ? (
+                  <div className="text-center py-12 bg-slate-50 rounded-2xl border border-dashed border-slate-200 flex flex-col items-center justify-center gap-2.5">
+                    <div className="w-7 h-7 border-3 border-teal-600 border-t-transparent rounded-full animate-spin"></div>
+                    <p className="text-xs font-semibold text-slate-600">Đang tải danh sách câu hỏi từ Ngân hàng câu hỏi...</p>
+                  </div>
+                ) : filteredQuestions.length === 0 ? (
+                  <div className="text-center py-10 bg-slate-50 rounded-2xl border border-dashed border-slate-200 p-6 space-y-2">
+                    <div className="w-10 h-10 rounded-full bg-amber-50 text-amber-500 mx-auto flex items-center justify-center">
+                      <HelpCircle className="w-5 h-5" />
+                    </div>
+                    <p className="text-xs font-bold text-slate-800">
+                      {selectedLesson !== 'all'
+                        ? `Chưa có câu hỏi nào trong bài học "${selectedLesson}"`
+                        : `Chưa có câu hỏi nào thuộc môn ${subject} - ${grade} trong Ngân hàng câu hỏi.`}
+                    </p>
+                    <p className="text-[11px] text-slate-500 max-w-md mx-auto leading-relaxed">
+                      {selectedLesson !== 'all'
+                        ? 'Thầy/Cô có thể chọn "Tất cả bài học" trong danh sách phía trên hoặc vào phân hệ Ngân hàng câu hỏi để bổ sung câu hỏi.'
+                        : 'Thầy/Cô vui lòng chuyển sang Môn/Khối khác ở Bước 1 hoặc vào phân hệ Ngân hàng câu hỏi để tạo mới câu hỏi.'}
                     </p>
                   </div>
                 ) : (

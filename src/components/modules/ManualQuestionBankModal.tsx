@@ -150,6 +150,7 @@ export const ManualQuestionBankModal: React.FC<ManualQuestionBankModalProps> = (
           level: q.level || defaultLevel,
           type: activeType,
           lessonName: lessonName,
+          topic: lessonName,
           content: q.content || '',
           options: [],
           correctAnswer: '',

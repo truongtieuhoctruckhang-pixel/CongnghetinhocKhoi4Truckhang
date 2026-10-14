@@ -23,7 +23,7 @@ async function callGeminiApiDirect(
   systemInstruction?: string,
   responseJson: boolean = false
 ): Promise<string> {
-  const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+  const candidateModels = ['gemini-3.7-flash', 'gemini-flash-latest', 'gemini-2.0-flash', 'gemini-1.5-flash'];
   let lastError: any = null;
 
   for (const model of candidateModels) {
@@ -84,7 +84,7 @@ export async function testGeminiLatency(customKey?: string): Promise<LatencyTest
       return {
         latencyMs: data?.latencyMs || (Date.now() - startTime),
         status: data?.status === 'online' ? 'online' : 'error',
-        modelName: data?.modelName || 'gemini-2.5-flash',
+        modelName: data?.modelName || 'gemini-3.7-flash',
         message: data?.message || 'Kết nối thành công!',
       };
     }
@@ -96,7 +96,7 @@ export async function testGeminiLatency(customKey?: string): Promise<LatencyTest
         return {
           latencyMs: data?.latencyMs || 0,
           status: 'error',
-          modelName: data?.modelName || 'gemini-2.5-flash',
+          modelName: data?.modelName || 'gemini-3.7-flash',
           message: data?.message || 'Lỗi kiểm tra kết nối API Key.',
         };
       }
@@ -107,7 +107,7 @@ export async function testGeminiLatency(customKey?: string): Promise<LatencyTest
 
   // 2. Client-side direct fallback for Vercel / static deployments with customKey
   if (apiKey && apiKey.trim()) {
-    const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+    const candidateModels = ['gemini-3.7-flash', 'gemini-flash-latest', 'gemini-2.0-flash', 'gemini-1.5-flash'];
     for (const model of candidateModels) {
       const directStart = Date.now();
       try {
@@ -157,7 +157,7 @@ export async function testGeminiLatency(customKey?: string): Promise<LatencyTest
   return {
     latencyMs: 0,
     status: 'error',
-    modelName: 'gemini-2.5-flash',
+    modelName: 'gemini-3.7-flash',
     message: apiKey ? 'Không thể kết nối tới máy chủ Gemini. Vui lòng kiểm tra đường truyền mạng hoặc API Key.' : 'Chưa nhập API Key.',
   };
 }
