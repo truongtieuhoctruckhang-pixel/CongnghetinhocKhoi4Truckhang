@@ -1,7 +1,8 @@
 import { SUBJECTS, GRADES, CLASSES_BY_GRADE, ALL_CLASSES, EXAM_TYPES, QUESTION_TYPES, getQuestionTypeLabel } from '../../lib/constants';
 import { getSubjectColorStyles } from '../../utils/subjectColors';
 import { getTeachersFromLocalStorage, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
-import { getStudentsFromLocalStorage, getDefault5BRoster } from '../../services/studentStorageService';
+import { getStudentsFromLocalStorage, getDefault5BRoster, getStandardClassName, normalizeClassKey } from '../../services/studentStorageService';
+import { StudentRecord } from '../../types';
 import { auth } from '../../services/firebase';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebaseConfig';
@@ -55,7 +56,7 @@ import {
   Save,
   SaveAll,
   Image as ImageIcon,
-  FileQuestion, Upload, Volume2, Database
+  FileQuestion, Upload, Volume2, Database, MessageSquare
 } from 'lucide-react';
 import { ExamPaper, QuestionItem, UserRole } from '../../types';
 import { generateExamQuestionsAI } from '../../services/geminiService';
@@ -68,6 +69,7 @@ import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFirestore } from '../../services/questionStorageService';
 import { useScoreSort } from '../../lib/useScoreSort';
 import { ExamQuestionEditorCard, normalizeQuestionType } from './ExamQuestionEditorCard';
+import { roundEducationalScore, formatEducationalScore } from '../../utils/scoreUtils';
 
 export interface TrackingSubmissionStudent {
   id: string;
@@ -79,6 +81,7 @@ export interface TrackingSubmissionStudent {
   submittedTime: string;
   status: 'submitted' | 'waiting';
   aiNote?: string;
+  isTeacherCustom?: boolean;
   needManual?: boolean;
 }
 
@@ -327,18 +330,112 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     };
   }, []);
 
-  // Real-time Firestore Classes State
+  // Real-time Firestore Classes & Rosters & Submissions State
   interface SchoolClassItem {
     id: string;
     name: string;
     grade: string;
   }
   const [realClasses, setRealClasses] = useState<SchoolClassItem[]>([]);
+  const [cloudClassRosters, setCloudClassRosters] = useState<Record<string, StudentRecord[]>>({});
+  const [cloudSubmissions, setCloudSubmissions] = useState<any[]>([]);
+  const [cloudHwSubmissions, setCloudHwSubmissions] = useState<any[]>([]);
+  const [localSubmissions, setLocalSubmissions] = useState<any[]>([]);
+
+  const formatSubmissionDate = useCallback((dateVal?: any): string => {
+    if (!dateVal) {
+      const now = new Date();
+      const d = String(now.getDate()).padStart(2, '0');
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      const y = now.getFullYear();
+      const h = String(now.getHours()).padStart(2, '0');
+      const min = String(now.getMinutes()).padStart(2, '0');
+      return `${d}/${m}/${y} ${h}:${min}`;
+    }
+    if (typeof dateVal === 'string') {
+      if (/^\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}/.test(dateVal)) return dateVal;
+      if (dateVal.includes('Hôm nay')) {
+        const timePart = dateVal.replace(/^.*Hôm nay,?\s*/i, '').trim();
+        const now = new Date();
+        const d = String(now.getDate()).padStart(2, '0');
+        const m = String(now.getMonth() + 1).padStart(2, '0');
+        const y = now.getFullYear();
+        return `${d}/${m}/${y} ${timePart}`;
+      }
+      const d = new Date(dateVal);
+      if (!isNaN(d.getTime())) {
+        const day = String(d.getDate()).padStart(2, '0');
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const year = d.getFullYear();
+        const hour = String(d.getHours()).padStart(2, '0');
+        const minute = String(d.getMinutes()).padStart(2, '0');
+        return `${day}/${month}/${year} ${hour}:${minute}`;
+      }
+      return dateVal;
+    }
+    if (dateVal && typeof dateVal.toDate === 'function') {
+      const d = dateVal.toDate();
+      const day = String(d.getDate()).padStart(2, '0');
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const year = d.getFullYear();
+      const hour = String(d.getHours()).padStart(2, '0');
+      const minute = String(d.getMinutes()).padStart(2, '0');
+      return `${day}/${month}/${year} ${hour}:${minute}`;
+    }
+    return new Date().toLocaleDateString('vi-VN');
+  }, []);
+
+  const refreshLocalSubmissions = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const collected: any[] = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key) continue;
+        if (
+          key.startsWith('eduplay_student_submissions_') ||
+          key.startsWith('eduplay_student_exam_subs_') ||
+          key.startsWith('eduplay_homework_submissions_') ||
+          key === 'eduplay_all_submissions'
+        ) {
+          try {
+            const raw = localStorage.getItem(key);
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              if (Array.isArray(parsed)) {
+                collected.push(...parsed);
+              } else if (parsed && typeof parsed === 'object') {
+                collected.push(parsed);
+              }
+            }
+          } catch {}
+        }
+      }
+      setLocalSubmissions(collected);
+    } catch (err) {
+      console.warn('Error reading LocalStorage submissions:', err);
+    }
+  }, []);
 
   useEffect(() => {
-    let unsubscribe = () => {};
+    refreshLocalSubmissions();
+    const handleUpdate = () => refreshLocalSubmissions();
+    window.addEventListener('eduplay_student_submissions_updated', handleUpdate);
+    window.addEventListener('storage', handleUpdate);
+    return () => {
+      window.removeEventListener('eduplay_student_submissions_updated', handleUpdate);
+      window.removeEventListener('storage', handleUpdate);
+    };
+  }, [refreshLocalSubmissions]);
+
+  useEffect(() => {
+    let unsubClasses = () => {};
+    let unsubRosters = () => {};
+    let unsubSubs = () => {};
+    let unsubHwSubs = () => {};
+
     try {
-      unsubscribe = onSnapshot(collection(db, 'classes'), (snapshot) => {
+      unsubClasses = onSnapshot(collection(db, 'classes'), (snapshot) => {
         if (!snapshot.empty) {
           const map = new Map<string, SchoolClassItem>();
           snapshot.forEach((docSnap) => {
@@ -365,7 +462,215 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     } catch (err) {
       console.warn('Error fetching classes in ExamManagementModule:', err);
     }
-    return () => unsubscribe();
+
+    try {
+      unsubRosters = onSnapshot(collection(db, 'class_rosters'), (snapshot) => {
+        if (!snapshot.empty) {
+          const rosters: Record<string, StudentRecord[]> = {};
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data();
+            const rawName = (data.className || data.name || data.classKey || data.id || docSnap.id || '').trim();
+            if (rawName) {
+              const stdName = getStandardClassName(rawName);
+              const upperKey = normalizeClassKey(rawName);
+              const list = Array.isArray(data.students) ? data.students : [];
+              rosters[stdName] = list;
+              rosters[upperKey] = list;
+            }
+          });
+          setCloudClassRosters(rosters);
+        }
+      }, (err) => {
+        console.warn('Error subscribing to class_rosters in ExamManagementModule:', err);
+      });
+    } catch (err) {
+      console.warn('Error setting up class_rosters listener in ExamManagementModule:', err);
+    }
+
+    try {
+      unsubSubs = onSnapshot(collection(db, 'submissions'), (snapshot) => {
+        const list: any[] = [];
+        if (!snapshot.empty) {
+          snapshot.forEach((docSnap) => {
+            list.push({ id: docSnap.id, ...docSnap.data() });
+          });
+        }
+        setCloudSubmissions(list);
+      }, (err) => {
+        console.warn('Error subscribing to submissions in ExamManagementModule:', err);
+      });
+    } catch (err) {
+      console.warn('Error setting up submissions listener in ExamManagementModule:', err);
+    }
+
+    try {
+      unsubHwSubs = onSnapshot(collection(db, 'homework_submissions'), (snapshot) => {
+        const list: any[] = [];
+        if (!snapshot.empty) {
+          snapshot.forEach((docSnap) => {
+            list.push({ id: docSnap.id, ...docSnap.data() });
+          });
+        }
+        setCloudHwSubmissions(list);
+      }, (err) => {
+        console.warn('Error subscribing to homework_submissions in ExamManagementModule:', err);
+      });
+    } catch (err) {
+      console.warn('Error setting up homework_submissions listener in ExamManagementModule:', err);
+    }
+
+    return () => {
+      unsubClasses();
+      unsubRosters();
+      unsubSubs();
+      unsubHwSubs();
+    };
+  }, []);
+
+  const getClassRoster = useCallback((className?: string): StudentRecord[] => {
+    if (!className) return [];
+    const stdName = getStandardClassName(className);
+    const upperKey = normalizeClassKey(className);
+
+    if (cloudClassRosters[stdName] && cloudClassRosters[stdName].length > 0) {
+      return cloudClassRosters[stdName];
+    }
+    if (cloudClassRosters[upperKey] && cloudClassRosters[upperKey].length > 0) {
+      return cloudClassRosters[upperKey];
+    }
+
+    const fromLocal = getStudentsFromLocalStorage(className);
+    if (fromLocal && fromLocal.length > 0) {
+      return fromLocal;
+    }
+
+    return getDefault5BRoster();
+  }, [cloudClassRosters]);
+
+  const allSubmissionsPool = useMemo(() => {
+    const map = new Map<string, any>();
+    localSubmissions.forEach(s => {
+      const idKey = s.id || `${s.homeworkId || s.examId || ''}_${s.studentId || s.studentCode || ''}`;
+      if (idKey) map.set(idKey, s);
+    });
+    cloudHwSubmissions.forEach(s => {
+      const idKey = s.id || `${s.homeworkId || s.assignmentId || ''}_${s.studentId || s.studentCode || ''}`;
+      if (idKey) map.set(idKey, s);
+    });
+    cloudSubmissions.forEach(s => {
+      const idKey = s.id || `${s.homeworkId || s.assignmentId || s.examId || ''}_${s.studentId || s.studentCode || ''}`;
+      if (idKey) map.set(idKey, s);
+    });
+    exams.forEach(ex => {
+      if (Array.isArray(ex.submissions)) {
+        ex.submissions.forEach(s => {
+          const idKey = s.id || `${ex.id}_${s.studentId || s.studentName || ''}`;
+          if (idKey && !map.has(idKey)) map.set(idKey, { ...s, examId: ex.id, examTitle: ex.title });
+        });
+      }
+    });
+    return Array.from(map.values());
+  }, [localSubmissions, cloudHwSubmissions, cloudSubmissions, exams]);
+
+  const isSubmissionForExam = useCallback((sub: any, exam: ExamPaper): boolean => {
+    if (!sub || !exam) return false;
+
+    const examId = String(exam.id || '').trim().toLowerCase();
+    const originalExamId = String(exam.originalExamId || '').trim().toLowerCase();
+    const rootExamId = examId.replace(/-class-.*$/, '');
+    const examTitle = String(exam.title || '').trim().toLowerCase();
+
+    const subCandidates = [
+      sub.examId,
+      sub.testId,
+      sub.assignmentId,
+      sub.homeworkId,
+      sub.id,
+      sub.assignment?.id,
+      sub.assignment?.homeworkId,
+      sub.exam?.id
+    ]
+      .filter(Boolean)
+      .map(v => String(v).trim().toLowerCase());
+
+    const idMatches = subCandidates.some(c => 
+      c === examId || 
+      (originalExamId && c === originalExamId) || 
+      (rootExamId && (c === rootExamId || c.replace(/-class-.*$/, '') === rootExamId)) ||
+      (examId.length > 3 && c.includes(examId)) ||
+      (c.length > 3 && examId.includes(c))
+    );
+
+    const titleCandidates = [
+      sub.examTitle,
+      sub.title,
+      sub.assignmentTitle,
+      sub.assignment?.title,
+      sub.exam?.title
+    ]
+      .filter(Boolean)
+      .map(v => String(v).trim().toLowerCase());
+
+    const titleMatches = examTitle.length > 2 && titleCandidates.some(t => 
+      t === examTitle || 
+      t.includes(examTitle) || 
+      examTitle.includes(t)
+    );
+
+    if (!idMatches && !titleMatches) return false;
+
+    if (exam.targetClass) {
+      const examClassNorm = exam.targetClass.replace(/^Lớp\s*/i, '').trim().toUpperCase();
+      const subClass = String(sub.className || sub.classId || sub.targetClass || sub.assignment?.targetClass || '')
+        .replace(/^Lớp\s*/i, '')
+        .trim()
+        .toUpperCase();
+      if (subClass && subClass !== examClassNorm) {
+        const stCode = String(sub.studentCode || sub.studentId || '').toUpperCase();
+        if (!stCode.includes(examClassNorm)) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  }, []);
+
+  const isSubmissionForStudent = useCallback((sub: any, st: StudentRecord): boolean => {
+    if (!sub || !st) return false;
+
+    const stId = String(st.id || '').trim().toLowerCase();
+    const stCode = String(st.code || '').trim().toLowerCase();
+    const stName = String(st.fullName || st.name || '').trim().toLowerCase();
+    const stUsername = String(st.username || '').trim().toLowerCase();
+    const stEmail = String(st.email || '').trim().toLowerCase();
+
+    const cleanStId = stId.replace(/[^a-z0-9]/g, '');
+    const cleanStCode = stCode.replace(/[^a-z0-9]/g, '');
+
+    const subStudentId = String(sub.studentId || '').trim().toLowerCase();
+    const subStudentCode = String(sub.studentCode || '').trim().toLowerCase();
+    const subRecordId = String(sub.studentRecordId || '').trim().toLowerCase();
+    const subName = String(sub.studentName || sub.name || '').trim().toLowerCase();
+    const subEmail = String(sub.email || '').trim().toLowerCase();
+    const subUsername = String(sub.username || '').trim().toLowerCase();
+
+    const cleanSubStudentId = subStudentId.replace(/[^a-z0-9]/g, '');
+    const cleanSubStudentCode = subStudentCode.replace(/[^a-z0-9]/g, '');
+    const cleanSubRecordId = subRecordId.replace(/[^a-z0-9]/g, '');
+
+    if (stId && (subStudentId === stId || subStudentCode === stId || subRecordId === stId)) return true;
+    if (stCode && (subStudentCode === stCode || subStudentId === stCode || subRecordId === stCode)) return true;
+
+    if (cleanStCode && (cleanSubStudentCode === cleanStCode || cleanSubStudentId === cleanStCode || cleanSubStudentId.endsWith(cleanStCode))) return true;
+    if (cleanStId && (cleanSubStudentId === cleanStId || cleanSubRecordId === cleanStId)) return true;
+
+    if (stEmail && subEmail && stEmail === subEmail) return true;
+    if (stUsername && subUsername && stUsername === subUsername) return true;
+
+    if (stName && subName && stName === subName) return true;
+
+    return false;
   }, []);
 
   // Assignment Modal State
@@ -420,7 +725,15 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const handleOpenAssignmentModal = (exam: ExamPaper) => {
     setAssignmentExam(exam);
     setAssignmentTitle(exam.title);
-    setAssignmentDuration(exam.durationMinutes);
+    setAssignmentDuration(exam.durationMinutes || 15);
+    setAssignmentType(exam.examType || 'Thường xuyên');
+    if (exam.startTime) {
+      setAssignmentOpenTime(exam.startTime);
+    }
+    if (exam.endTime) {
+      setAssignmentDeadline(true);
+      setAssignmentDeadlineDate(exam.endTime);
+    }
     setAssignmentTab('select_class');
 
     // Filter matching classes for this exam
@@ -481,8 +794,11 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
           targetClass: cls,
           status: 'published',
           assignmentDate: new Date().toLocaleDateString('vi-VN'),
+          startTime: assignmentOpenTime || assignmentExam.startTime || new Date().toLocaleString('vi-VN'),
+          endTime: assignmentDeadline ? (assignmentDeadlineDate || assignmentExam.endTime || '') : (assignmentExam.endTime || ''),
+          isShuffled: assignmentShuffleQuestions || assignmentExam.isShuffled || false,
           submissionsCount: assignmentExam.targetClass === cls ? (assignmentExam.submissionsCount || 0) : 0,
-          totalStudents: 35,
+          totalStudents: (getStudentsFromLocalStorage(cls)?.length) || (assignmentExam.totalStudents || 35),
         };
 
         onSaveExam(classSpecificExam);
@@ -519,57 +835,181 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [trackingFilter, setTrackingFilter] = useState<'all' | 'need_manual'>('all');
   const [trackingActionMenuId, setTrackingActionMenuId] = useState<string | null>(null);
 
-  // Dynamic tracking students derived from trackingExam.submissions and class roster matching trackingExam.id
+  // Bộ tạo lời nhận xét đánh giá học sinh tiểu học theo định hướng Thông tư 27/2020/TT-BGDĐT
+  const generateThongTu27Feedback = useCallback((
+    score: number | null,
+    studentName?: string,
+    wrongQuestions: number[] = [],
+    totalQuestions: number = 5
+  ): string => {
+    if (score === null || score === undefined) return '';
+
+    const nameParts = (studentName || 'Em').trim().split(/\s+/);
+    const firstName = nameParts.length > 0 ? nameParts[nameParts.length - 1] : 'Em';
+
+    // 1. Mức Hoàn thành Tốt / Xuất sắc (9.0 - 10.0)
+    // Khen ngợi tinh thần học tập, mức độ nắm vững kiến thức, khả năng tư duy và vận dụng tốt
+    if (score >= 9.0) {
+      if (score >= 9.9) {
+        const compliments = [
+          `Em ${firstName} nắm rất chắc kiến thức, làm bài xuất sắc và cẩn thận. Tiếp tục phát huy nhé!`,
+          `Em hoàn thành xuất sắc bài kiểm tra, tư duy nhanh và chính xác. Đáng khen ngợi!`,
+          `Em nắm vững toàn bộ nội dung bài học, trả lời chính xác các câu hỏi. Thầy/Cô rất tự hào về em!`,
+          `Khen ngợi em có ý thức học tập tốt, kỹ năng làm bài vững vàng. Cố gắng duy trì phong độ nhé!`
+        ];
+        const hash = Math.abs((studentName || '').split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)) % compliments.length;
+        return compliments[hash];
+      }
+      return `Em nắm chắc kiến thức trọng tâm, làm bài rất tốt. Tiếp tục phát huy nhé!`;
+    }
+
+    // 2. Mức Hoàn thành / Khá - Đạt (5.0 - 8.9)
+    // Khen ngợi các câu làm đúng, chỉ rõ nội dung/câu học sinh làm chưa chính xác để chú ý ôn tập
+    if (score >= 5.0) {
+      if (wrongQuestions.length > 0 && wrongQuestions.length <= 3) {
+        const wrongListStr = wrongQuestions.map(q => `Câu ${q}`).join(', ');
+        return `Em hoàn thành cơ bản tốt bài làm, cần chú ý đọc kĩ đề bài và ôn tập lại ${wrongListStr}.`;
+      }
+      if (score >= 7.0) {
+        return `Em nắm được kiến thức nền tảng, làm bài khá tốt. Cần rèn luyện tính cẩn thận hơn để đạt kết quả tối đa ở các bài sau.`;
+      }
+      return `Em có cố gắng và hoàn thành bài làm. Cần chú ý đọc kĩ đề bài, ôn tập lại các câu làm chưa đúng để tiến bộ hơn nhé.`;
+    }
+
+    // 3. Mức Chưa hoàn thành / Cần cố gắng (< 5.0)
+    // Động viên tinh thần, chỉ ra mảng kiến thức cần rèn luyện thêm
+    if (wrongQuestions.length > 0 && wrongQuestions.length <= 4) {
+      const wrongListStr = wrongQuestions.map(q => `Câu ${q}`).join(', ');
+      return `Em cần chú ý ôn tập kĩ lại lý thuyết và luyện tập thêm các dạng bài tập ở ${wrongListStr} nhé.`;
+    }
+    return `Em cần chú ý ôn tập kĩ lại nội dung lý thuyết và luyện tập thêm các dạng bài tập này nhé.`;
+  }, []);
+
+  // Dynamic tracking students derived from Firestore submissions, LocalStorage and class roster
   const trackingStudentsList = useMemo(() => {
     if (!trackingExam) return [];
 
     console.log("Current Exam ID querying for tracking:", trackingExam.id);
 
     const targetClassName = trackingExam.targetClass || 'Lớp 4C';
-    const classStudentsRoster = getStudentsFromLocalStorage(targetClassName) || getDefault5BRoster();
-    const subMap = new Map<string, any>();
+    const classStudentsRoster = getClassRoster(targetClassName);
 
-    (trackingExam.submissions || []).forEach(sub => {
-      const key = (sub.studentId || sub.studentName || '').trim().toLowerCase();
-      if (key) subMap.set(key, sub);
-    });
+    // Merge submissions from trackingExam and allSubmissionsPool matching this exam
+    const examSubmissions = [
+      ...(trackingExam.submissions || []),
+      ...allSubmissionsPool.filter(sub => isSubmissionForExam(sub, trackingExam))
+    ];
 
     const questionCount = trackingExam.questions?.length || 5;
 
     return classStudentsRoster.map((st, idx) => {
-      const studentKeyId = (st.id || '').trim().toLowerCase();
-      const studentKeyName = (st.name || st.fullName || '').trim().toLowerCase();
-      const submission = subMap.get(studentKeyId) || subMap.get(studentKeyName);
+      const studentCodeDisplay = st.code || st.id || `st-${idx + 1}`;
+      const studentNameDisplay = st.fullName || st.name || `Học sinh ${idx + 1}`;
+
+      // Flexible matching for student submission
+      const submission = examSubmissions.find(sub => isSubmissionForStudent(sub, st));
+      const teacherNote = submission?.teacherFeedback || submission?.feedback || (trackingExam as any).teacherNotes?.[st.id] || (trackingExam as any).teacherNotes?.[st.code];
 
       if (submission) {
-        const score = submission.score !== undefined ? submission.score : null;
+        let score: number | null = null;
+        if (typeof submission.score === 'number' && !isNaN(submission.score)) {
+          score = submission.score;
+        } else if (typeof submission.scoreText === 'string') {
+          const m = submission.scoreText.match(/(\d+(\.\d+)?)/);
+          if (m) score = parseFloat(m[1]);
+        } else if (submission.score !== undefined && submission.score !== null) {
+          const p = Number(submission.score);
+          if (!isNaN(p)) score = p;
+        }
+        score = roundEducationalScore(score);
+
         const isPassed = typeof score === 'number' && score >= 5;
-        const answers = Array.from({ length: questionCount }).map((_, qi) => (qi < Math.floor(questionCount * 0.8) ? ('pass' as const) : ('fail' as const)));
+
+        // Build answers array with questionResults or pass/fail derivation
+        const answers = Array.from({ length: questionCount }).map((_, qi) => {
+          if (score !== null && score >= 9.9) {
+            return 'pass' as const;
+          }
+          if (score !== null && score === 0) {
+            return 'fail' as const;
+          }
+
+          if (Array.isArray(submission.questionResults)) {
+            const qr = submission.questionResults[qi] || submission.questionResults.find((r: any) => r.questionIndex === qi || r.index === qi);
+            if (qr && typeof qr.isCorrect === 'boolean') {
+              return qr.isCorrect ? ('pass' as const) : ('fail' as const);
+            }
+          }
+          if (submission.answers) {
+            const a = Array.isArray(submission.answers) ? submission.answers[qi] : (submission.answers as any)?.[qi];
+            if (a === 'pass' || a === 'fail') return a;
+            const q = trackingExam.questions?.[qi];
+            if (q && q.correctAnswer !== undefined && a !== undefined && a !== null) {
+              return String(a).trim().toUpperCase() === String(q.correctAnswer).trim().toUpperCase() ? ('pass' as const) : ('fail' as const);
+            }
+          }
+          if (score !== null) {
+            const passCount = Math.round((score / 10) * questionCount);
+            return qi < passCount ? ('pass' as const) : ('fail' as const);
+          }
+          return 'pass' as const;
+        });
+
+        // Collect wrong questions for specific feedback
+        const wrongQuestions: number[] = [];
+        answers.forEach((ans, qi) => {
+          if (ans === 'fail') wrongQuestions.push(qi + 1);
+        });
+
+        const formattedTime = formatSubmissionDate(submission.submittedAt || submission.submittedTime || submission.createdAt);
+
+        // Check if teacher has manually saved a personal feedback note
+        const hasCustomTeacherNote = Boolean(
+          teacherNote && 
+          typeof teacherNote === 'string' && 
+          teacherNote.trim() && 
+          !teacherNote.includes('Đã nộp bài thành công') && 
+          !teacherNote.includes('Đã chấm điểm thành công')
+        );
+
+        // Automated feedback following Circular 27 guidelines
+        const thongTu27Note = generateThongTu27Feedback(score, studentNameDisplay, wrongQuestions, questionCount);
+
+        const candidateNote = submission.feedback && typeof submission.feedback === 'string' && !submission.feedback.includes('Đã nộp bài') && !submission.feedback.includes('Đã chấm điểm')
+          ? submission.feedback.trim()
+          : '';
+
+        const finalNote = hasCustomTeacherNote 
+          ? teacherNote.trim() 
+          : (candidateNote || thongTu27Note);
+
         return {
-          id: st.code || `3a${idx + 1}`,
-          name: st.name || st.fullName || `Học sinh ${idx + 1}`,
+          id: studentCodeDisplay,
+          name: studentNameDisplay,
           badge: score !== null && score < 5 ? 'Cần chú ý' : undefined,
           answers,
           totalScore: score,
           attempts: submission.attempts || 1,
-          submittedTime: submission.submittedAt || '10 phút',
+          submittedTime: formattedTime,
           status: 'submitted' as const,
-          aiNote: submission.feedback || 'Đã chấm điểm thành công trên hệ thống.',
+          aiNote: finalNote,
+          isTeacherCustom: hasCustomTeacherNote,
           needManual: score !== null && score < 5
         };
       } else {
         return {
-          id: st.code || `3a${idx + 1}`,
-          name: st.name || st.fullName || `Học sinh ${idx + 1}`,
+          id: studentCodeDisplay,
+          name: studentNameDisplay,
           answers: Array.from({ length: questionCount }).map(() => 'none' as const),
           totalScore: null,
           attempts: null,
           submittedTime: 'CHỜ HỌC SINH',
-          status: 'waiting' as const
+          status: 'waiting' as const,
+          aiNote: teacherNote || undefined
         };
       }
     });
-  }, [trackingExam]);
+  }, [trackingExam, getClassRoster, allSubmissionsPool, isSubmissionForExam, isSubmissionForStudent, formatSubmissionDate, generateThongTu27Feedback]);
 
   const filteredTrackingSubmissions = useMemo(() => {
     if (trackingFilter === 'need_manual') {
@@ -580,7 +1020,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
 
   const getExamScoreInfo = useCallback((st: TrackingSubmissionStudent) => ({
     isSubmitted: st.status === 'submitted',
-    score: st.totalScore !== null && !isNaN(Number(st.totalScore)) ? Number(st.totalScore) : null
+    score: roundEducationalScore(st.totalScore)
   }), []);
 
   const {
@@ -593,6 +1033,56 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [statsTab, setStatsTab] = useState<'performance' | 'details' | 'questions'>('performance');
   const [viewingQuestion, setViewingQuestion] = useState<number | null>(null);
   const [gradingStudent, setGradingStudent] = useState<any>(null);
+  const [feedbackStudent, setFeedbackStudent] = useState<any>(null);
+  const [teacherFeedbackText, setTeacherFeedbackText] = useState('');
+
+  const handleOpenTeacherFeedback = (st: any) => {
+    setFeedbackStudent(st);
+    setTeacherFeedbackText(st.aiNote && st.aiNote !== '-' && !st.aiNote.includes('Đã chấm điểm thành công') ? st.aiNote : '');
+  };
+
+  const handleSaveTeacherFeedback = () => {
+    if (!trackingExam || !feedbackStudent) return;
+    const updatedSubmissions = [...(trackingExam.submissions || [])];
+    const subIdx = updatedSubmissions.findIndex(sub => 
+      (sub.studentId && sub.studentId.trim().toLowerCase() === feedbackStudent.id.trim().toLowerCase()) ||
+      (sub.studentName && sub.studentName.trim().toLowerCase() === feedbackStudent.name.trim().toLowerCase())
+    );
+
+    const feedbackVal = teacherFeedbackText.trim() || 'Giáo viên đã nhận xét bài làm.';
+
+    if (subIdx >= 0) {
+      updatedSubmissions[subIdx] = {
+        ...updatedSubmissions[subIdx],
+        teacherFeedback: feedbackVal,
+        feedback: feedbackVal
+      };
+    } else {
+      updatedSubmissions.push({
+        id: `sub-${Date.now()}`,
+        studentId: feedbackStudent.id,
+        studentName: feedbackStudent.name,
+        score: 0,
+        submittedAt: new Date().toLocaleDateString('vi-VN'),
+        teacherFeedback: feedbackVal,
+        feedback: feedbackVal
+      });
+    }
+
+    const updatedExam: ExamPaper = {
+      ...trackingExam,
+      submissions: updatedSubmissions,
+      teacherNotes: {
+        ...(trackingExam.teacherNotes || {}),
+        [feedbackStudent.id]: feedbackVal
+      }
+    };
+
+    onSaveExam(updatedExam);
+    setTrackingExam(updatedExam);
+    showToast(`✨ Đã lưu nhận xét cho học sinh ${feedbackStudent.name} thành công!`, 'success');
+    setFeedbackStudent(null);
+  };
   const [retakeStudent, setRetakeStudent] = useState<{id: string, name: string} | null>(null);
   const [deleteStudent, setDeleteStudent] = useState<{id: string, name: string} | null>(null);
   const [editingExam, setEditingExam] = useState<ExamPaper | null>(null);
@@ -2020,13 +2510,38 @@ return (
                         )}
                       </td>
                       <td className="px-6 py-4 text-center">
-                        {exam.totalStudents ? (
-                          <span className="font-bold text-blue-600">
-                            {exam.submissionsCount || 0}/{exam.totalStudents} ({Math.round(((exam.submissionsCount || 0)/exam.totalStudents)*100)}%)
-                          </span>
-                        ) : (
-                          <span className="text-slate-400 font-medium">---</span>
-                        )}
+                        {(() => {
+                          const classRoster = exam.targetClass ? getClassRoster(exam.targetClass) : [];
+                          const total = classRoster.length > 0 ? classRoster.length : (exam.totalStudents || 0);
+
+                          const matchingSubs = [
+                            ...(exam.submissions || []),
+                            ...allSubmissionsPool.filter(sub => isSubmissionForExam(sub, exam))
+                          ];
+
+                          let submittedCount = 0;
+                          if (classRoster.length > 0) {
+                            const submittedSet = new Set<string>();
+                            classRoster.forEach(st => {
+                              if (matchingSubs.some(sub => isSubmissionForStudent(sub, st))) {
+                                submittedSet.add(st.id || st.code || st.name);
+                              }
+                            });
+                            submittedCount = submittedSet.size;
+                          } else {
+                            submittedCount = matchingSubs.length;
+                          }
+
+                          const finalDone = Math.max(submittedCount, exam.submissionsCount || 0);
+
+                          return total > 0 ? (
+                            <span className="font-bold text-blue-600">
+                              {finalDone}/{total} ({Math.round(((finalDone)/total)*100)}%)
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 font-medium">---</span>
+                          );
+                        })()}
                       </td>
                       <td className="px-6 py-4 text-center">
                         <button 
@@ -3129,7 +3644,7 @@ return (
                     Theo dõi nộp bài kiểm tra
                   </h3>
                   <p className="text-xs text-slate-500 font-medium mt-0.5">
-                    {trackingExam.title} &bull; {trackingExam.targetClass ? (trackingExam.targetClass.startsWith('Lớp') ? trackingExam.targetClass : `Lớp ${trackingExam.targetClass}`) : 'Chưa giao lớp'}: <span className="font-bold text-slate-700">{trackingExam.totalStudents || 35} học sinh</span>
+                    {trackingExam.title} &bull; {trackingExam.targetClass ? (trackingExam.targetClass.startsWith('Lớp') ? trackingExam.targetClass : `Lớp ${trackingExam.targetClass}`) : 'Chưa giao lớp'}: <span className="font-bold text-slate-700">{trackingStudentsList.length} học sinh</span>
                   </p>
                 </div>
               </div>
@@ -3158,13 +3673,13 @@ return (
                     onClick={() => setTrackingFilter('all')}
                     className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${trackingFilter === 'all' ? 'bg-slate-100 text-slate-800 border-slate-200 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                   >
-                    Tất cả (39)
+                    Tất cả ({trackingStudentsList.length})
                   </button>
                   <button
                     onClick={() => setTrackingFilter('need_manual')}
                     className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-1.5 ${trackingFilter === 'need_manual' ? 'bg-amber-50 text-amber-700 border-amber-200 shadow-sm' : 'text-amber-600 hover:text-amber-700 hover:bg-amber-50/50'}`}
                   >
-                    <AlertTriangle className="w-4 h-4" /> Cần chấm thủ công (2)
+                    <AlertTriangle className="w-4 h-4" /> Cần chấm thủ công ({trackingStudentsList.filter(st => st.needManual).length})
                   </button>
                 </div>
                 <div className="text-sm text-slate-500 font-medium">
@@ -3176,19 +3691,25 @@ return (
               <div className="flex-1 overflow-auto bg-white border border-slate-200 rounded-2xl shadow-sm">
                 <table className="w-full text-left border-collapse text-xs whitespace-nowrap">
                   <thead>
-                    <tr className="bg-slate-50/80 text-[10px] uppercase font-black text-slate-500 tracking-wider">
-                      <th className="p-4 border-b border-slate-100 w-12 text-center">STT</th>
-                      <th className="p-4 border-b border-slate-100">Mã HS</th>
-                      <th className="p-4 border-b border-slate-100">Tên học sinh</th>
+                    <tr className="bg-slate-50 text-[10px] uppercase font-black text-slate-500 tracking-wider">
+                      <th className="p-4 border-b border-slate-200 w-12 min-w-[48px] max-w-[48px] text-center sticky left-0 top-0 z-30 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">
+                        STT
+                      </th>
+                      <th className="p-4 border-b border-slate-200 w-20 min-w-[72px] max-w-[72px] sticky left-[48px] top-0 z-30 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">
+                        Mã HS
+                      </th>
+                      <th className="p-4 border-b border-slate-200 min-w-[200px] sticky left-[120px] top-0 z-30 bg-slate-50 border-r-2 border-slate-200 shadow-[4px_0_8px_-2px_rgba(0,0,0,0.08),0_1px_0_0_#e2e8f0]">
+                        Tên học sinh
+                      </th>
                       {Array.from({ length: trackingExam?.questions?.length || 5 }).map((_, qIdx) => (
-                        <th key={qIdx} className="p-4 border-b border-slate-100 text-center text-slate-700 font-black">
+                        <th key={qIdx} className="p-4 border-b border-slate-200 text-center text-slate-700 font-black sticky top-0 z-20 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">
                           CÂU {qIdx + 1}
                         </th>
                       ))}
                       <th 
                         onClick={handleToggleSortScore}
-                        className={`p-4 border-b border-slate-100 text-center select-none cursor-pointer transition-colors ${
-                          sortScoreDirection ? 'bg-indigo-50/80 hover:bg-indigo-100/70' : 'hover:bg-slate-100/70'
+                        className={`p-4 border-b border-slate-200 text-center select-none cursor-pointer transition-colors sticky top-0 z-20 shadow-[0_1px_0_0_#e2e8f0] ${
+                          sortScoreDirection ? 'bg-indigo-50/90 hover:bg-indigo-100/80' : 'bg-slate-50 hover:bg-slate-100/80'
                         }`}
                         title={
                           sortScoreDirection === 'desc'
@@ -3217,23 +3738,28 @@ return (
                           )}
                         </div>
                       </th>
-                      <th className="p-4 border-b border-slate-100 text-center">Số lần làm</th>
-                      <th className="p-4 border-b border-slate-100 text-center">Thời gian nộp</th>
-                      <th className="p-4 border-b border-slate-100">Ghi chú AI / Nhật ký</th>
-                      <th className="p-4 border-b border-slate-100 text-center">Thao tác</th>
+                      <th className="p-4 border-b border-slate-200 text-center sticky top-0 z-20 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">Số lần làm</th>
+                      <th className="p-4 border-b border-slate-200 text-center sticky top-0 z-20 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">Thời gian nộp</th>
+                      <th className="p-4 border-b border-slate-200 sticky top-0 z-20 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">Ghi chú AI / Nhật ký</th>
+                      <th className="p-4 border-b border-slate-200 text-center sticky top-0 z-20 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">Thao tác</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
                     {sortedTrackingSubmissions.map((st, index) => {
                       const isWaiting = st.status === 'waiting' || st.totalScore === null;
+                      const stickyCellBg = st.needManual ? 'bg-amber-50 group-hover:bg-amber-100/70' : 'bg-white group-hover:bg-slate-50';
                       return (
                         <tr 
                           key={st.id} 
-                          className={`hover:bg-slate-50 transition-colors ${st.needManual ? 'bg-amber-50/20' : ''}`}
+                          className={`group hover:bg-slate-50 transition-colors ${st.needManual ? 'bg-amber-50/20' : ''}`}
                         >
-                          <td className="p-4 font-bold text-slate-500 text-center">{index + 1}</td>
-                          <td className="p-4 font-bold text-fuchsia-700">{st.id}</td>
-                          <td className="p-4">
+                          <td className={`p-4 font-bold text-slate-500 text-center w-12 min-w-[48px] max-w-[48px] sticky left-0 z-10 ${stickyCellBg} transition-colors`}>
+                            {index + 1}
+                          </td>
+                          <td className={`p-4 font-bold text-fuchsia-700 w-20 min-w-[72px] max-w-[72px] sticky left-[48px] z-10 ${stickyCellBg} transition-colors`}>
+                            {st.id}
+                          </td>
+                          <td className={`p-4 min-w-[200px] sticky left-[120px] z-10 ${stickyCellBg} border-r-2 border-slate-200 shadow-[4px_0_8px_-2px_rgba(0,0,0,0.08)] transition-colors`}>
                             <div className="flex items-center gap-2">
                               <span className="font-bold text-slate-800 text-sm">{st.name}</span>
                               {st.badge && (
@@ -3264,7 +3790,7 @@ return (
                           <td className="p-4 text-center">
                             {!isWaiting ? (
                               <span className="inline-flex w-8 h-8 rounded-full border-2 border-indigo-200 bg-white items-center justify-center font-bold text-indigo-700 text-sm shadow-2xs">
-                                {st.totalScore}
+                                {formatEducationalScore(st.totalScore)}
                               </span>
                             ) : (
                               <span className="text-slate-300 font-bold">–</span>
@@ -3292,12 +3818,34 @@ return (
                           </td>
                           <td className="p-4">
                             {st.aiNote ? (
-                              <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-2 max-w-[200px] whitespace-normal text-[10px] font-semibold flex gap-1.5 leading-snug">
-                                <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5 text-amber-600" />
-                                {st.aiNote}
+                              <div 
+                                className={`rounded-xl p-2.5 max-w-[280px] whitespace-normal text-xs font-medium leading-relaxed border shadow-2xs flex gap-2 items-start transition-all ${
+                                  st.totalScore !== null && st.totalScore >= 9
+                                    ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                                    : st.totalScore !== null && st.totalScore >= 5
+                                    ? 'bg-sky-50 border-sky-200 text-sky-900'
+                                    : 'bg-amber-50 border-amber-200 text-amber-900'
+                                }`}
+                                title={st.aiNote}
+                              >
+                                {st.totalScore !== null && st.totalScore >= 9 ? (
+                                  <Sparkles className="w-4 h-4 flex-shrink-0 mt-0.5 text-emerald-600" />
+                                ) : st.totalScore !== null && st.totalScore >= 5 ? (
+                                  <BookOpen className="w-4 h-4 flex-shrink-0 mt-0.5 text-sky-600" />
+                                ) : (
+                                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-600" />
+                                )}
+                                <div className="flex-1">
+                                  {st.isTeacherCustom && (
+                                    <span className="inline-block mr-1 px-1.5 py-0.2 rounded text-[9px] font-black uppercase tracking-wider bg-teal-100 text-teal-800 border border-teal-200">
+                                      GV
+                                    </span>
+                                  )}
+                                  <span>{st.aiNote}</span>
+                                </div>
                               </div>
                             ) : (
-                              <span className="text-slate-300">-</span>
+                              <span className="text-slate-300 font-medium">-</span>
                             )}
                           </td>
                           <td className="p-4 text-center relative">
@@ -3308,7 +3856,10 @@ return (
                               <MoreVertical className="w-4 h-4" />
                             </button>
                             {trackingActionMenuId === st.id && (
-                              <div className="absolute right-10 top-0 w-36 bg-white rounded-2xl shadow-xl border border-slate-100 p-1.5 z-50 animate-scale-up origin-top-right">
+                              <div className="absolute right-10 top-0 w-44 bg-white rounded-2xl shadow-xl border border-slate-100 p-1.5 z-50 animate-scale-up origin-top-right">
+                                <button onClick={() => { handleOpenTeacherFeedback(st); setTrackingActionMenuId(null); }} className="w-full text-left px-2 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 rounded-xl flex items-center gap-2.5 transition-colors cursor-pointer">
+                                  <div className="w-6 h-6 rounded-lg bg-teal-500 text-white flex items-center justify-center shrink-0 shadow-sm"><MessageSquare className="w-3.5 h-3.5" /></div> Nhận xét
+                                </button>
                                 <button onClick={() => { setGradingStudent({ id: st.id, name: st.name }); setTrackingActionMenuId(null); }} className="w-full text-left px-2 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 rounded-xl flex items-center gap-2.5 transition-colors cursor-pointer">
                                   <div className="w-6 h-6 rounded-lg bg-blue-500 text-white flex items-center justify-center shrink-0 shadow-sm"><Edit3 className="w-3.5 h-3.5" /></div> Chấm bài
                                 </button>
@@ -3327,6 +3878,105 @@ return (
                   </tbody>
                 </table>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Teacher Feedback Modal */}
+      {feedbackStudent && trackingExam && (
+        <div className="fixed inset-0 z-[80] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col animate-scale-up">
+            {/* Header */}
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-white shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-teal-50 text-teal-600 flex items-center justify-center shrink-0">
+                  <MessageSquare className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-slate-800">
+                    Nhận xét học sinh
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    Học sinh: <span className="font-bold text-slate-700">{feedbackStudent.name}</span> (Mã: {feedbackStudent.id})
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setFeedbackStudent(null)}
+                className="p-2 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 space-y-4">
+              {/* Current AI Note / Existing Comment */}
+              <div>
+                <label className="block text-xs font-bold text-slate-600 uppercase mb-1.5">
+                  Nhận xét hiện tại / AI:
+                </label>
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 font-medium italic">
+                  {feedbackStudent.aiNote && feedbackStudent.aiNote !== '-' ? feedbackStudent.aiNote : 'Chưa có nhận xét nào.'}
+                </div>
+              </div>
+
+              {/* Quick Preset Buttons */}
+              <div>
+                <label className="block text-xs font-bold text-slate-600 uppercase mb-2">
+                  Chọn nhanh nhận xét mẫu:
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    "Em nắm chắc kiến thức, làm bài rất tốt. Tiếp tục phát huy nhé!",
+                    "Tuyên dương tinh thần học tập tốt, hoàn thành xuất sắc bài kiểm tra.",
+                    "Em hoàn thành cơ bản tốt bài làm, cần chú ý đọc kĩ đề bài và ôn tập lại các câu làm chưa đúng.",
+                    "Cần chú ý làm bài cẩn thận hơn",
+                    "Em cần chú ý ôn tập kĩ lại nội dung lý thuyết và luyện tập thêm các dạng bài tập này nhé.",
+                    "Cần luyện tập thêm các dạng bài tự luận"
+                  ].map((preset, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => setTeacherFeedbackText(preset)}
+                      className="px-3 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded-xl text-xs font-bold transition-all cursor-pointer text-left"
+                    >
+                      + {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Custom Teacher Feedback Input */}
+              <div>
+                <label className="block text-xs font-bold text-slate-600 uppercase mb-1.5">
+                  Lời nhận xét / Sửa nhận xét của Giáo viên:
+                </label>
+                <textarea
+                  rows={4}
+                  value={teacherFeedbackText}
+                  onChange={(e) => setTeacherFeedbackText(e.target.value)}
+                  placeholder="Nhập lời nhận xét riêng của giáo viên cho học sinh này..."
+                  className="w-full p-3 rounded-xl border border-slate-300 text-sm focus:outline-none focus:border-teal-500 font-medium text-slate-800"
+                />
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex items-center justify-end gap-3 rounded-b-3xl">
+              <button
+                onClick={() => setFeedbackStudent(null)}
+                className="px-5 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-600 font-bold text-sm hover:bg-slate-50 transition-colors cursor-pointer"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                onClick={handleSaveTeacherFeedback}
+                className="px-6 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-sm shadow-md transition-all cursor-pointer flex items-center gap-2"
+              >
+                <Check className="w-4 h-4" /> Lưu nhận xét
+              </button>
             </div>
           </div>
         </div>
@@ -3489,7 +4139,7 @@ return (
                   <table className="w-full text-left border-collapse text-xs whitespace-nowrap min-w-max">
                     <thead>
                       <tr className="bg-slate-50/80 text-[11px] font-bold text-slate-700 tracking-wide">
-                        <th className="px-4 py-3 border border-slate-200 bg-slate-100">Học sinh</th>
+                        <th className="px-4 py-3 border border-slate-200 bg-slate-100 sticky left-0 z-20 border-r-2 border-slate-200 shadow-[4px_0_8px_-2px_rgba(0,0,0,0.08)]">Học sinh</th>
                         {(statsExam.questions || []).map((_, idx) => (
                           <th key={idx} className="px-4 py-3 border border-slate-200 text-center w-16">Câu {idx + 1}</th>
                         ))}
@@ -3497,7 +4147,7 @@ return (
                     </thead>
                     <tbody>
                       <tr className="hover:bg-slate-50 transition-colors">
-                        <td className="px-4 py-3 border border-slate-200 font-bold text-slate-800">Hà Việt Hoàng</td>
+                        <td className="px-4 py-3 border border-slate-200 font-bold text-slate-800 sticky left-0 z-10 bg-white border-r-2 border-slate-200 shadow-[4px_0_8px_-2px_rgba(0,0,0,0.08)]">Hà Việt Hoàng</td>
                         {(statsExam.questions || []).map((_, idx) => (
                           <td key={idx} className="px-4 py-3 border border-slate-200 text-center">
                             {idx < 7 ? (

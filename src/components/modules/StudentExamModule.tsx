@@ -781,6 +781,36 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           console.error('Error saving exam submission on timeout:', err);
         }
 
+        try {
+          const sessionInfo = getEffectiveStudentClassAndGrade();
+          const canonicalExamId = String(exam.id || '').trim();
+          const canonicalCode = extractCanonicalStudentCode(currentUserId || sessionInfo.studentId);
+          const resolvedStudentName = currentUserName || sessionInfo.studentName || 'Học sinh';
+          const resolvedClass = studentClass || sessionInfo.studentClass || (exam as any).targetClass || '';
+
+          saveHomeworkSubmissionToFirestore({
+            homeworkId: canonicalExamId,
+            assignmentTitle: exam.title,
+            subject: exam.subject,
+            grade: exam.grade,
+            targetClass: (exam as any).targetClass || resolvedClass,
+            studentId: canonicalCode || currentUserId,
+            studentCode: canonicalCode || currentUserId,
+            studentRecordId: sessionInfo.studentId || currentUserId,
+            studentName: resolvedStudentName,
+            className: resolvedClass,
+            score: scoreNumber,
+            scoreText: scoreVal,
+            answers,
+            questionResults,
+            correctCount: Math.round(correct),
+            totalQuestions: questions.length,
+            submittedAt: nowTimeStr
+          }).catch(err => console.warn('Error saving timeout exam submission to Firestore:', err));
+        } catch (err) {
+          console.warn('Error initiating timeout exam submission cloud sync:', err);
+        }
+
         // Thưởng đề kiểm tra
         awardExamReward(currentUserId, exam.id || 'ex-auto', exam.title, scoreNumber);
       }
@@ -889,6 +919,16 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
       if (dtStr.includes('T')) {
         const d = new Date(dtStr);
         if (!isNaN(d.getTime())) return d;
+      }
+      // Format "MM/DD/YYYY hh:mm A" or "MM/DD/YYYY HH:mm"
+      const m1 = dtStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{1,2})(?:\s*(AM|PM))?)?/i);
+      if (m1) {
+        const [_, MM, dd, yyyy, hhStr, mmStr, ampm] = m1;
+        let hh = hhStr ? parseInt(hhStr, 10) : 0;
+        const mm = mmStr ? parseInt(mmStr, 10) : 0;
+        if (ampm && ampm.toUpperCase() === 'PM' && hh < 12) hh += 12;
+        if (ampm && ampm.toUpperCase() === 'AM' && hh === 12) hh = 0;
+        return new Date(Number(yyyy), Number(MM) - 1, Number(dd), hh, mm);
       }
       const match = dtStr.match(/(\d{1,2}):(\d{1,2})\s*[-–]?\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/);
       if (match) {
@@ -1305,6 +1345,39 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
           } catch (err) {
             console.error('Error saving exam submission:', err);
+          }
+
+          // Đồng bộ bài nộp đề kiểm tra lên Firestore collection submissions & homework_submissions
+          try {
+            const sessionInfo = getEffectiveStudentClassAndGrade();
+            const canonicalExamId = String(exam.id || '').trim();
+            const canonicalCode = extractCanonicalStudentCode(currentUserId || sessionInfo.studentId);
+            const resolvedStudentName = currentUserName || sessionInfo.studentName || 'Học sinh';
+            const resolvedClass = studentClass || sessionInfo.studentClass || (exam as any).targetClass || '';
+            const timeSpentSec = Math.max(1, Math.round((Date.now() - (activeExamSession.startTime || Date.now())) / 1000));
+
+            saveHomeworkSubmissionToFirestore({
+              homeworkId: canonicalExamId,
+              assignmentTitle: exam.title,
+              subject: exam.subject,
+              grade: exam.grade,
+              targetClass: (exam as any).targetClass || resolvedClass,
+              studentId: canonicalCode || currentUserId,
+              studentCode: canonicalCode || currentUserId,
+              studentRecordId: sessionInfo.studentId || currentUserId,
+              studentName: resolvedStudentName,
+              className: resolvedClass,
+              score: scoreNumber,
+              scoreText: scoreVal,
+              answers,
+              questionResults,
+              correctCount: Math.round(correct),
+              totalQuestions: questions.length,
+              submittedAt: 'Hôm nay, ' + nowTimeStr,
+              timeSpentSeconds: timeSpentSec
+            }).catch(err => console.warn('Error syncing exam submission to Firestore:', err));
+          } catch (err) {
+            console.warn('Error initiating exam submission cloud sync:', err);
           }
 
           // Thưởng đề kiểm tra
@@ -2498,11 +2571,11 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                         </div>
                         <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100 flex items-center gap-2">
                           <Calendar className="w-4 h-4 text-emerald-600 shrink-0" />
-                          <span className="truncate">📅 Mở: <b>{ex.startTime || '08:00 - 02/09/2026'}</b></span>
+                          <span className="truncate">📅 Mở: <b>{ex.startTime || 'Chưa cập nhật'}</b></span>
                         </div>
                         <div className="bg-red-50 p-2.5 rounded-xl border border-red-100 flex items-center gap-2 text-red-700">
                           <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
-                          <span className="truncate">Hạn: <b>{ex.endTime || '23:59 - 05/09/2026'}</b></span>
+                          <span className="truncate">Hạn: <b>{ex.endTime || 'Không thời hạn'}</b></span>
                         </div>
                       </div>
 
@@ -2540,7 +2613,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                           onClick={() => {
                             setAlertModal({
                               title: '🔒 Đề kiểm tra chưa mở',
-                              message: `Đề kiểm tra sẽ mở lúc ${ex.startTime || '08:00 - 02/09/2026'}. Em vui lòng quay lại đúng giờ nhé!`,
+                              message: `Đề kiểm tra sẽ mở lúc ${ex.startTime || 'thời gian quy định'}. Em vui lòng quay lại đúng giờ nhé!`,
                               type: 'restricted'
                             });
                           }}
@@ -2556,7 +2629,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                           onClick={() => {
                             setAlertModal({
                               title: '⛔ Đã hết hạn làm bài',
-                              message: `Đề kiểm tra đã hết hạn làm bài vào lúc ${ex.endTime || '23:59 - 05/09/2026'}. Em vui lòng liên hệ giáo viên nếu cần hỗ trợ.`,
+                              message: `Đề kiểm tra đã hết hạn làm bài vào lúc ${ex.endTime || 'thời gian quy định'}. Em vui lòng liên hệ giáo viên nếu cần hỗ trợ.`,
                               type: 'restricted'
                             });
                           }}

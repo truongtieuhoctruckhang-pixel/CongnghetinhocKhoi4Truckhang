@@ -59,6 +59,7 @@ import { UseQuestionBankModal } from './UseQuestionBankModal';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFirestore } from '../../services/questionStorageService';
 import { useScoreSort } from '../../lib/useScoreSort';
+import { roundEducationalScore, formatEducationalScore, formatScoreText } from '../../utils/scoreUtils';
 import { StudentAssignmentModule } from './StudentAssignmentModule';
 import { checkQuestionCorrectLocal } from './StudentExamModule';
 import { getCurrentTeacherProfile, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
@@ -90,6 +91,7 @@ interface StudentSubmissionRow {
   submittedTime: string;
   status: 'submitted' | 'waiting';
   feedback?: string;
+  aiFeedback?: string;
 }
 
 const CLASS_3A_STUDENTS: StudentSubmissionRow[] = [
@@ -361,8 +363,29 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
         const scoreVal = submission.score !== undefined
           ? submission.score
           : (perQuestionStatus.filter(r => r === 'pass').length / questionCount) * 10;
-        const numericScore = typeof scoreVal === 'number' ? Math.round(scoreVal * 10) / 10 : scoreVal;
+        const numericScore = roundEducationalScore(scoreVal);
         const isPassed = typeof numericScore === 'number' && numericScore >= 5;
+        let aiFeedbackText = 
+          submission.aiFeedback || 
+          submission.feedback || 
+          submission.comment || 
+          submission.aiComment || 
+          submission.evaluation || 
+          submission.aiEvaluation || 
+          submission.teacherFeedback || 
+          submission.teacherAdvice || 
+          submission.advice || 
+          submission.review || 
+          '';
+
+        if (!aiFeedbackText && (submission.praiseTitle || submission.praiseContent)) {
+          aiFeedbackText = `${submission.praiseTitle || ''} ${submission.praiseContent || ''}`.trim();
+        }
+
+        if (!aiFeedbackText && Array.isArray(perQuestionStatus)) {
+          const passedCount = perQuestionStatus.filter(r => r === 'pass').length;
+          aiFeedbackText = `Khen ngợi em đã hoàn thành đúng ${passedCount}/${questionCount} câu. Làm bài tốt và cần phát huy!`;
+        }
 
         return {
           id: st.id,
@@ -374,7 +397,8 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
           aiStatus: isPassed ? ('pass' as const) : ('fail' as const),
           submittedTime: submission.submittedAt || new Date().toLocaleString('vi-VN'),
           status: 'submitted' as const,
-          feedback: submission.feedback
+          feedback: submission.feedback,
+          aiFeedback: aiFeedbackText
         };
       } else {
         return {
@@ -386,7 +410,8 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
           totalScore: '-',
           aiStatus: 'none' as const,
           submittedTime: 'Chờ HS',
-          status: 'waiting' as const
+          status: 'waiting' as const,
+          aiFeedback: ''
         };
       }
     });
@@ -2181,21 +2206,21 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 
             {/* 3. STUDENT SUBMISSION TABLE */}
             <div className="flex-1 overflow-x-auto border border-slate-200 rounded-2xl max-h-[52vh] overflow-y-auto bg-white shadow-2xs">
-              <table className="w-full text-left border-collapse text-xs">
+              <table className="w-full text-left border-collapse text-xs whitespace-nowrap">
                 <thead>
                   <tr className="bg-slate-50/90 sticky top-0 z-10 border-b border-slate-200 text-slate-600 font-extrabold uppercase text-[10px] tracking-wider">
-                    <th className="py-3 px-2 text-center whitespace-nowrap w-12">STT</th>
-                    <th className="py-3 px-3 whitespace-nowrap w-16">MÃ HS</th>
-                    <th className="py-3 px-4 whitespace-nowrap">TÊN HỌC SINH</th>
+                    <th className="py-3 px-2 text-center whitespace-nowrap w-12 min-w-[48px] max-w-[48px] sticky left-0 top-0 z-30 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">STT</th>
+                    <th className="py-3 px-3 whitespace-nowrap w-20 min-w-[72px] max-w-[72px] sticky left-[48px] top-0 z-30 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">MÃ HS</th>
+                    <th className="py-3 px-4 whitespace-nowrap min-w-[180px] sticky left-[120px] top-0 z-30 bg-slate-50 border-r-2 border-slate-200 shadow-[4px_0_8px_-2px_rgba(0,0,0,0.08),0_1px_0_0_#e2e8f0]">TÊN HỌC SINH</th>
                     {Array.from({ length: Math.max(1, activeDetailAssignment?.questions?.length || detailAssignment?.questions?.length || 1) }).map((_, qIdx) => (
-                      <th key={qIdx} className="py-3 px-2 text-center whitespace-nowrap font-black text-slate-700">
+                      <th key={qIdx} className="py-3 px-2 text-center whitespace-nowrap font-black text-slate-700 sticky top-0 z-20 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">
                         CÂU {qIdx + 1}
                       </th>
                     ))}
                     <th 
                       onClick={handleToggleAssignmentSortScore}
-                      className={`py-3 px-3 text-center whitespace-nowrap select-none cursor-pointer transition-colors ${
-                        assignmentSortScoreDirection ? 'bg-indigo-50/80 hover:bg-indigo-100/70' : 'hover:bg-slate-100/70'
+                      className={`py-3 px-3 text-center whitespace-nowrap select-none cursor-pointer transition-colors sticky top-0 z-20 shadow-[0_1px_0_0_#e2e8f0] ${
+                        assignmentSortScoreDirection ? 'bg-indigo-50/80 hover:bg-indigo-100/70' : 'bg-slate-50 hover:bg-slate-100/70'
                       }`}
                       title={
                         assignmentSortScoreDirection === 'desc'
@@ -2224,9 +2249,9 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                         )}
                       </div>
                     </th>
-                    <th className="py-3 px-3 text-center whitespace-nowrap">AI THÔNG BÁO</th>
-                    <th className="py-3 px-4 text-center whitespace-nowrap">THỜI GIAN NỘP</th>
-                    <th className="py-3 px-3 text-center whitespace-nowrap">CHẤM LẠI</th>
+                    <th className="py-3 px-3 text-center whitespace-nowrap sticky top-0 z-20 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">NHẬN XÉT AI</th>
+                    <th className="py-3 px-4 text-center whitespace-nowrap sticky top-0 z-20 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">THỜI GIAN NỘP</th>
+                    <th className="py-3 px-3 text-center whitespace-nowrap sticky top-0 z-20 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">CHẤM LẠI</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -2240,17 +2265,17 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                       className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
                     >
                       {/* STT */}
-                      <td className="py-3 px-2 text-center whitespace-nowrap font-bold text-slate-500">
+                      <td className="py-3 px-2 text-center whitespace-nowrap font-bold text-slate-500 w-12 min-w-[48px] max-w-[48px] sticky left-0 z-10 bg-white group-hover:bg-slate-50 transition-colors">
                         {index + 1}
                       </td>
 
                       {/* Mã HS */}
-                      <td className="py-3 px-3 whitespace-nowrap font-extrabold text-fuchsia-700">
+                      <td className="py-3 px-3 whitespace-nowrap font-extrabold text-fuchsia-700 w-20 min-w-[72px] max-w-[72px] sticky left-[48px] z-10 bg-white group-hover:bg-slate-50 transition-colors">
                         {st.code}
                       </td>
 
                       {/* Tên HS */}
-                      <td className="py-3 px-4 whitespace-nowrap font-bold text-slate-900 group-hover:text-indigo-900 transition-colors">
+                      <td className="py-3 px-4 whitespace-nowrap font-bold text-slate-900 group-hover:text-indigo-900 transition-colors min-w-[180px] sticky left-[120px] z-10 bg-white group-hover:bg-slate-50 border-r-2 border-slate-200 shadow-[4px_0_8px_-2px_rgba(0,0,0,0.08)]">
                         {st.name}
                       </td>
 
@@ -2287,12 +2312,19 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                         )}
                       </td>
 
-                      {/* AI Thông báo */}
-                      <td className="py-3 px-3 text-center whitespace-nowrap">
-                        {st.aiStatus === 'pass' ? (
-                          <span className="inline-flex w-5 h-5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-700 items-center justify-center text-[10px] font-black">
-                            ✓
-                          </span>
+                      {/* Nhận xét AI */}
+                      <td className="py-3 px-3 text-center">
+                        {st.aiFeedback ? (
+                          <div 
+                            className="max-w-[200px] truncate mx-auto text-xs font-medium text-teal-800 bg-teal-50 border border-teal-200 px-2 py-1 rounded-lg cursor-pointer hover:bg-teal-100 transition-colors"
+                            title={st.aiFeedback}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedStudentDetail(st);
+                            }}
+                          >
+                            {st.aiFeedback}
+                          </div>
                         ) : (
                           <span className="text-slate-300 font-semibold">-</span>
                         )}
@@ -2398,6 +2430,9 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                 <p><strong className="text-rose-950 font-bold">Điểm thang 10:</strong> <span className="text-rose-600 font-extrabold">{selectedStudentDetail.totalScore !== '-' ? selectedStudentDetail.totalScore : 10}</span></p>
                 <p><strong className="text-rose-950 font-bold">Thời gian làm bài:</strong> 2 phút, 21 giây</p>
                 <p><strong className="text-rose-950 font-bold">Thời gian nộp bài:</strong> 2026-08-17T20:51:30.043Z</p>
+                {selectedStudentDetail.aiFeedback && (
+                  <p className="pt-1"><strong className="text-rose-950 font-bold">Nhận xét AI:</strong> <span className="text-teal-900 font-semibold italic">{selectedStudentDetail.aiFeedback}</span></p>
+                )}
               </div>
 
               <div className="pt-1">
@@ -2961,15 +2996,15 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                 </div>
 
                 <div className="overflow-x-auto max-h-80">
-                  <table className="w-full text-left border-collapse text-xs">
+                  <table className="w-full text-left border-collapse text-xs whitespace-nowrap">
                     <thead>
                       <tr className="bg-slate-50 sticky top-0 z-10 border-b border-slate-200 text-slate-600 font-extrabold uppercase text-[10px] tracking-wider">
-                        <th className="py-2.5 px-3 text-center w-12">HẠNG</th>
-                        <th className="py-2.5 px-3 w-16">MÃ HS</th>
-                        <th className="py-2.5 px-4">HỌ VÀ TÊN</th>
-                        <th className="py-2.5 px-3 text-center">ĐIỂM SỐ</th>
-                        <th className="py-2.5 px-3 text-center">THỜI GIAN LÀM</th>
-                        <th className="py-2.5 px-4 text-center">DANH HIỆU / HUY HIỆU</th>
+                        <th className="py-2.5 px-3 text-center w-12 min-w-[48px] max-w-[48px] sticky left-0 top-0 z-30 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">HẠNG</th>
+                        <th className="py-2.5 px-3 w-20 min-w-[72px] max-w-[72px] sticky left-[48px] top-0 z-30 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">MÃ HS</th>
+                        <th className="py-2.5 px-4 min-w-[180px] sticky left-[120px] top-0 z-30 bg-slate-50 border-r-2 border-slate-200 shadow-[4px_0_8px_-2px_rgba(0,0,0,0.08),0_1px_0_0_#e2e8f0]">HỌ VÀ TÊN</th>
+                        <th className="py-2.5 px-3 text-center sticky top-0 z-20 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">ĐIỂM SỐ</th>
+                        <th className="py-2.5 px-3 text-center sticky top-0 z-20 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">THỜI GIAN LÀM</th>
+                        <th className="py-2.5 px-4 text-center sticky top-0 z-20 bg-slate-50 shadow-[0_1px_0_0_#e2e8f0]">DANH HIỆU / HUY HIỆU</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -2988,10 +3023,12 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                           badgeColor = 'bg-blue-100 text-blue-800 border-blue-200';
                         }
 
+                        const stickyCellBg = st.code === '3a1' ? 'bg-amber-50 group-hover:bg-amber-100/70' : st.code === '3a10' ? 'bg-slate-50 group-hover:bg-slate-100' : 'bg-white group-hover:bg-slate-50';
+
                         return (
-                          <tr key={st.code} className={`transition-colors ${bgClass}`}>
+                          <tr key={st.code} className={`transition-colors group ${bgClass}`}>
                             {/* Hạng */}
-                            <td className="py-2.5 px-3 text-center font-black">
+                            <td className={`py-2.5 px-3 text-center font-black w-12 min-w-[48px] max-w-[48px] sticky left-0 z-10 ${stickyCellBg} transition-colors`}>
                               {idx === 0 ? (
                                 <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-400 text-white font-black text-xs shadow-xs">
                                   1
@@ -3010,12 +3047,12 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                             </td>
 
                             {/* Mã HS */}
-                            <td className="py-2.5 px-3 font-extrabold text-fuchsia-700">
+                            <td className={`py-2.5 px-3 font-extrabold text-fuchsia-700 w-20 min-w-[72px] max-w-[72px] sticky left-[48px] z-10 ${stickyCellBg} transition-colors`}>
                               {st.code}
                             </td>
 
                             {/* Họ tên */}
-                            <td className="py-2.5 px-4 font-extrabold text-slate-800">
+                            <td className={`py-2.5 px-4 font-extrabold text-slate-800 min-w-[180px] sticky left-[120px] z-10 ${stickyCellBg} border-r-2 border-slate-200 shadow-[4px_0_8px_-2px_rgba(0,0,0,0.08)] transition-colors`}>
                               {st.name}
                             </td>
 

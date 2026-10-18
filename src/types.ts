@@ -161,6 +161,7 @@ export interface ExamPaper {
   originalExamId?: string;
   assignmentDate?: string;
   submissions?: any[];
+  teacherNotes?: Record<string, string>;
 }
 
 export interface AssignmentSubmission {
@@ -185,6 +186,17 @@ export interface AssignmentSubmission {
   timeSpentSeconds?: number;
   attempts?: number;
   feedback?: string;
+  aiFeedback?: string;
+  comment?: string;
+  aiComment?: string;
+  evaluation?: string;
+  aiEvaluation?: string;
+  teacherFeedback?: string;
+  teacherAdvice?: string;
+  advice?: string;
+  review?: string;
+  praiseContent?: string;
+  praiseTitle?: string;
   status: 'pending' | 'graded';
 }
 
